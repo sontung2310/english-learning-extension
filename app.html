@@ -1,0 +1,55 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>English Learner</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="page">
+  <div class="bar">
+    <h1>English Learner</h1>
+    <button id="gear" class="ghost">Settings</button>
+  </div>
+
+  <section id="settings" class="settings" hidden>
+    <label for="apiKey">OpenAI API key (used for sentence meanings)</label>
+    <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off">
+    <label for="dailyGoal">Daily goal (words + sentences)</label>
+    <input id="dailyGoal" type="number" min="1" step="1" placeholder="5">
+    <div class="row">
+      <button id="saveKey" class="primary">Save</button>
+      <span id="saveMsg" class="muted"></span>
+    </div>
+    <p class="muted">The key is saved only in this browser. Words use the free dictionary first. AI fills in what is missing. Get a key at platform.openai.com.</p>
+  </section>
+
+  <div id="addForm" class="addform"></div>
+  <div id="engage" class="engage"></div>
+  <div id="stats" class="stats"></div>
+
+  <div class="tabs">
+    <button data-tab="word" class="active">Words</button>
+    <button data-tab="sentence">Sentences</button>
+  </div>
+
+  <div class="layout">
+    <aside class="calendar-wrap">
+      <div class="cal-head">
+        <button id="prev" class="ghost">&lsaquo;</button>
+        <strong id="monthTitle"></strong>
+        <button id="next" class="ghost">&rsaquo;</button>
+      </div>
+      <div id="monthTotal" class="muted"></div>
+      <div id="cal" class="cal"></div>
+    </aside>
+    <main>
+      <div id="filterBar" class="filter"></div>
+      <div id="list"></div>
+    </main>
+  </div>
+
+  <script src="lib.js"></script>
+  <script src="ui.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

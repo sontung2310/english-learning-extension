@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "skills": {
+    "chrome-devtools-axi": {
+      "source": "kunchenguid/chrome-devtools-axi",
+      "sourceType": "github",
+      "skillPath": "skills/chrome-devtools-axi/SKILL.md",
+      "computedHash": "919144acfa8793f162bd2cc0edf87e87d7b1adc3c74881fb7787904532aa90c8"
+    },
+    "gh-axi": {
+      "source": "kunchenguid/gh-axi",
+      "sourceType": "github",
+      "skillPath": "skills/gh-axi/SKILL.md",
+      "computedHash": "915a2eaef76bdc9d67767e9021c4f673e3e4109b16be6cb5e9837006e15fd9e2"
+    },
+    "lavish": {
+      "source": "kunchenguid/lavish-axi",
+      "sourceType": "github",
+      "skillPath": "skills/lavish/SKILL.md",
+      "computedHash": "7a82385996353d525e181bbcef8d95c4d43bfdbc666cd4e91d073d32201c5dcd"
+    },
+    "lavish-design": {
+      "source": "kunchenguid/lavish-axi",
+      "sourceType": "github",
+      "skillPath": ".agents/skills/lavish-design/SKILL.md",
+      "computedHash": "c1b70b66c1a52f77db4d22af08a02dbe9132647e1ddd3f100556a9a146551608"
+    }
+  }
+}
