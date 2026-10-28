@@ -257,32 +257,71 @@ const PRON = (() => {
   // Azure gives numbers; a learner needs a sentence. Only the numbers go up,
   // never the audio: Azure already judged the sounds, so the model is just
   // putting its verdict into words.
+  // The facts the coach is allowed to reason from. Pure, so the prompt can be
+  // checked without spending an API call.
+  //
+  // This must describe the same thing the colours do - per sound, not per
+  // syllable. A sound can score 66 and still be the sound Azure expected, in
+  // which case the two IPA strings match exactly and a syllable summary stays
+  // in the nineties. Briefing the coach that way left the one red sound
+  // invisible, and the model filled the silence by naming a sound at random.
+  function coachFacts(targetText, type, assessment) {
+    if (type !== 'word') {
+      return (
+        `Target sentence: "${targetText}". They were heard saying: "${assessment.heard}". ` +
+        `Accuracy per word: ${(assessment.words || [])
+          .map((w) => `${w.text} ${Math.round(w.score)}/100${w.errorType ? ` (${w.errorType})` : ''}`)
+          .join(', ')}. ` +
+        `Content ${Math.round(assessment.completeness)}/100, pronunciation ${Math.round(
+          assessment.accuracy
+        )}/100, fluency ${Math.round(assessment.fluency)}/100` +
+        (assessment.prosody !== null ? `, prosody ${Math.round(assessment.prosody)}/100` : '') +
+        '.'
+      );
+    }
+
+    const slots = assessment.spokenIpa || [];
+    const scored = slots
+      .map(
+        (s) =>
+          `${s.expected}${s.spoken !== s.expected ? `->${s.spoken}` : ''} ${Math.round(s.score)}/100`
+      )
+      .join(', ');
+    const failed = slots.filter((s) => !s.ok);
+    const verdict = failed.length
+      ? `The ONLY sounds that failed: ${failed
+          .map(
+            (s) =>
+              `${s.expected} at ${Math.round(s.score)}/100 ` +
+              (s.spoken !== s.expected
+                ? `(they made ${s.spoken} instead)`
+                : `(the right sound, but too weak or unclear)`)
+          )
+          .join('; ')}.`
+      : 'Every sound passed. Do not invent a fault.';
+
+    return (
+      `Target word: "${targetText}". Expected sounds in IPA: ${assessment.targetIpa}. ` +
+      `Score for each sound in order: ${scored}. ` +
+      `${verdict} ` +
+      `Syllables: ${(assessment.syllables || [])
+        .map((s) => `${s.text} (${s.sound})`)
+        .join(', ')}.`
+    );
+  }
+
   async function coach(targetText, type, assessment) {
     const { apiKey } = await LIB.getSettings();
     if (!apiKey) return { error: 'no-key' };
-
-    const facts =
-      type === 'word'
-        ? `Target word: "${targetText}". Expected sounds in IPA: ${assessment.targetIpa}. ` +
-          `What they actually said: ${ipaOf(assessment.spokenIpa || [], 'spoken')}. ` +
-          `Accuracy per syllable: ${(assessment.syllables || [])
-            .map((s) => `${s.text} (${s.sound}) ${Math.round(s.score)}/100`)
-            .join(', ')}.`
-        : `Target sentence: "${targetText}". They were heard saying: "${assessment.heard}". ` +
-          `Accuracy per word: ${(assessment.words || [])
-            .map((w) => `${w.text} ${Math.round(w.score)}/100${w.errorType ? ` (${w.errorType})` : ''}`)
-            .join(', ')}. ` +
-          `Content ${Math.round(assessment.completeness)}/100, pronunciation ${Math.round(
-            assessment.accuracy
-          )}/100, fluency ${Math.round(assessment.fluency)}/100` +
-          (assessment.prosody !== null ? `, prosody ${Math.round(assessment.prosody)}/100` : '') +
-          '.';
 
     const prompt =
       `You are a warm, concise English pronunciation coach` +
       (type === 'sentence' ? ` marking a PTE Speaking read-aloud answer` : '') +
       `. A phoneme-level scorer already judged the recording - trust its numbers, do not re-score. ` +
-      `${facts} ` +
+      `${coachFacts(targetText, type, assessment)} ` +
+      (type === 'word'
+        ? `Name only a sound the scorer actually failed. Never name a sound that passed. `
+        : `Name only a word the scorer actually marked down. `) +
       `Reply with JSON only: {"feedback":"1-2 short sentences in simple English. Name the exact ` +
       `${type === 'word' ? 'sound or syllable' : 'word'} to fix and how to make it. Be encouraging."}`;
 
@@ -530,6 +569,7 @@ const PRON = (() => {
     parseAssessment,
     assessConfig,
     azureAssess,
+    coachFacts,
     coach,
     createSession,
     ERRORS,

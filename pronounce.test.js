@@ -277,6 +277,43 @@ check('sentence mode does not pretend one word is the whole answer', () => {
   assert.strictEqual(r.spokenIpa, undefined);
 });
 
+// ---------- what the coach is allowed to reason from ----------
+check('the coach is told which sound failed, not just the syllable it sits in', () => {
+  // The bug this guards: a sound can score 66 and still be the sound Azure
+  // expected, so both IPA strings match and every syllable stays in the
+  // nineties. Briefed that way the model saw no fault and named one at
+  // random - telling a learner to fix a sound they had got right.
+  const facts = PRON.coachFacts('definition', 'word', PRON.parseAssessment(GOOD_WORD, 'word'));
+  assert.ok(/n at 66\/100/.test(facts), facts);
+  assert.ok(/ONLY sounds that failed/.test(facts), facts);
+});
+
+check('a sound that passed is never offered as the fault', () => {
+  const facts = PRON.coachFacts('definition', 'word', PRON.parseAssessment(GOOD_WORD, 'word'));
+  const failedPart = facts.slice(facts.indexOf('The ONLY sounds that failed'));
+  for (const sound of ['d at', 'ɛ at', 'f at', 'ʃ at']) {
+    assert.ok(!failedPart.includes(sound), `${sound} passed but was listed as failed:\n${facts}`);
+  }
+});
+
+check('a swapped sound says what was said instead', () => {
+  const facts = PRON.coachFacts('definition', 'word', PRON.parseAssessment(WRONG_WORD, 'word'));
+  assert.ok(/d at 0\/100 \(they made b instead\)/.test(facts), facts);
+});
+
+check('a clean attempt tells the coach there is nothing to fix', () => {
+  const clean = PRON.parseAssessment(GOOD_WORD, 'word');
+  clean.spokenIpa = clean.spokenIpa.map((s) => ({ ...s, ok: true, score: 100 }));
+  const facts = PRON.coachFacts('definition', 'word', clean);
+  assert.ok(/Do not invent a fault/.test(facts), facts);
+});
+
+check('a sentence is still briefed per word, which is what its colours show', () => {
+  const facts = PRON.coachFacts('the cat sat down on the warm mat', 'sentence', PRON.parseAssessment(SENTENCE, 'sentence'));
+  assert.ok(/down 0\/100 \(Omission\)/.test(facts), facts);
+  assert.ok(/Content 75\/100/.test(facts), facts);
+});
+
 // ---------- nothing usable ----------
 check('silence is reported as no speech, not as a zero score', () => {
   assert.deepStrictEqual(PRON.parseAssessment({ RecognitionStatus: 'InitialSilenceTimeout' }, 'word'), {
