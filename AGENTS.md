@@ -30,54 +30,47 @@ unpacked extension.
 | `manifest.json` | MV3 config: permissions, background service worker, popup, icons |
 | `background.js` | Context menu registration and click handler (the save entry point) |
 | `lib.js` | `LIB` - all shared logic: storage, classify word vs sentence, dictionary lookup, OpenAI call, streak math, speech. Shared by background, popup, and app page |
-| `ui.js` | `UI` - shared DOM rendering: stat tiles, streak/goal banner, add form, toast, item cards, grouped-by-day lists |
+| `pronounce.js` | `PRON` - pronunciation practice: microphone capture, Azure Pronunciation Assessment, and the coach prompt. The parsing half is pure, so it is unit tested outside the browser |
+| `ui.js` | `UI` - shared DOM rendering: stat tiles, streak/goal banner, add form, toast, item cards, grouped-by-day lists, pronunciation panel |
 | `popup.html` / `popup.js` | Toolbar popup: add form, streak/goal banner, tabs, stats, item list, link to the full page |
-| `app.html` / `app.js` | Full page: same as popup plus calendar and the settings panel (API key, daily goal) |
+| `app.html` / `app.js` | Full page: same as popup plus calendar, the settings panel (OpenAI key, daily goal, Azure key and region), and the pronunciation panel on every card |
 | `style.css` | All styles, shared by popup and app page |
 | `icons/` | Toolbar icons (16/48/128) |
 | `scripts/chrome-devtools-mcp-wrapper.cjs` | Dev-only: see section 3, End-to-end testing |
 
 Storage is one `chrome.storage.local` key `items` (array) and one key
-`settings` (`{ apiKey, dailyGoal }`). `lib.js` serializes all writes through
+`settings` (`{ apiKey, dailyGoal, azureKey, azureRegion }`). `lib.js` serializes all writes through
 a single promise queue (`mutate`) so concurrent saves never clobber each
 other - keep using `mutate`/`updateItem`/`deleteItem` for any new write path
 instead of calling `chrome.storage.local.set` directly.
 
 ## 3. End-to-end testing
 
-Use the `chrome-devtools-axi` skill to drive a real Chrome, loaded with this
-extension unpacked, the same way a real user would. Two things need a
-workaround, both verified against this codebase and documented below:
+**Follow this section as written. Do not invent your own setup.**
+Do not build a harness page, do not start a static file server, do not stub
+`chrome.storage`. Those skip the real extension and cost more time than the
+flow below. The one call in "Start" launches a real Chrome with this
+extension loaded, and every later call reuses it.
 
-- **Branded Google Chrome refuses `--load-extension` outright.** Since
-  Chrome ~137, the official "Google Chrome" binary ignores
-  `--load-extension` and `--disable-extensions-except` on the command line
-  ("--load-extension is not allowed in Google Chrome, ignoring" - confirmed
-  by inspecting the binary's strings). You need an unbranded build. A
-  **Chrome for Testing** build works. Check for one already cached:
-  `ls ~/.cache/puppeteer/chrome/`. If missing, fetch one:
-  `npx -y @puppeteer/browsers install chrome@stable` then point
-  `CHROME_DEVTOOLS_AXI_EXECUTABLE_PATH` at the `.app/Contents/MacOS/Google
-  Chrome for Testing` binary it installs (or the Linux/Windows equivalent).
+### Cost rules (verified, follow them)
 
-- **chrome-devtools-axi needs `--categoryExtensions` on the underlying MCP
-  server**, which has no axi env var. It's on by default only in
-  chrome-devtools-mcp's own one-shot CLI mode, not when axi spawns it as an
-  MCP server. Route through the committed wrapper,
-  `scripts/chrome-devtools-mcp-wrapper.cjs`, via
-  `CHROME_DEVTOOLS_AXI_MCP_PATH` - it injects `--categoryExtensions` and
-  `--ignore-default-chrome-arg=--disable-extensions` (Puppeteer's own
-  default args disable extensions a second, independent way).
+- **One browser per task.** Run "Start" once. Run `chrome-devtools-axi stop`
+  once, at the very end of the whole task. Never stop between steps - a
+  relaunch is the single most expensive thing in this flow.
+- **Env vars go on the first call only.** Once the bridge is up, later
+  `chrome-devtools-axi` calls need no env vars at all.
+- **After editing `style.css`, `ui.js`, `lib.js`, `app.js` or `popup.js`,
+  reload the tab, nothing else:**
+  `chrome-devtools-axi eval "() => { location.reload(); return 1 }"`.
+  The page refetches those files, so the edit is live. No extension reload,
+  no relaunch.
+- **Only `manifest.json` and `background.js` need an extension reload**,
+  because they run in the service worker, not the page.
+- **Reuse the open tab.** `open` the same URL again only if you navigated
+  away.
+- **Seed with one `eval`**, not fixture files (see "Seed data" below).
 
-**Known limitation**: `chrome.contextMenus` items are native OS UI. No
-automation tool (chrome-devtools-axi, Puppeteer, or otherwise) can click a
-native right-click menu item. Work around it by calling the exact same code
-the menu click calls - `LIB.addItem` / `LIB.enrichItem` are available via
-`eval` on any extension page (popup or app page both load `lib.js`), so this
-still exercises the real save logic end to end. Only the native menu click
-itself is stubbed out.
-
-### Setup (one time per test session)
+### Start (one call, once per task)
 
 ```
 CFT="$(ls -d ~/.cache/puppeteer/chrome/*/*/*.app/Contents/MacOS/*Testing* | head -1)"
@@ -86,18 +79,19 @@ CHROME_DEVTOOLS_AXI_EXECUTABLE_PATH="$CFT" \
 CHROME_DEVTOOLS_AXI_USER_DATA_DIR=/tmp/english-learner-chrome-profile \
 CHROME_DEVTOOLS_AXI_MCP_PATH="$(pwd)/scripts/chrome-devtools-mcp-wrapper.cjs" \
 CHROME_DEVTOOLS_AXI_CHROME_ARGS="--load-extension=$(pwd)" \
-chrome-devtools-axi pages
+npx -y chrome-devtools-axi pages
 ```
 
-Keep those five env vars set for every subsequent `chrome-devtools-axi`
-call in the session (the bridge launches once and is reused).
+Then open the page and work there:
 
-The extension ID is a deterministic hash of this folder's absolute path -
-same ID every run as long as the checkout doesn't move. For the current
-checkout it's `allphpomdcegopfeljgoonigidfiglde`, so the popup is at
-`chrome-extension://allphpomdcegopfeljgoonigidfiglde/popup.html` and the
-full page at `.../app.html`. If the path differs (different machine, moved
-checkout), look it up instead of assuming:
+```
+npx -y chrome-devtools-axi open chrome-extension://allphpomdcegopfeljgoonigidfiglde/app.html
+```
+
+The extension ID is a deterministic hash of this folder's absolute path, so
+it stays the same as long as the checkout does not move. The popup is at
+`.../popup.html`. If the path differs (different machine, moved checkout),
+look the ID up instead of assuming:
 ```
 python3 -c "
 import json
@@ -107,36 +101,156 @@ for k, v in d.get('extensions', {}).get('settings', {}).items():
         print(k)
 "
 ```
-(`chrome-devtools-axi pages` must have run at least once first so Chrome
-has actually started and written the profile.)
 
-The very first `open`/`newpage` call after a fresh launch sometimes errors
-"No page is currently selected" - run `chrome-devtools-axi selectpage 1`
-once and retry; this is a one-time quirk of the initial `about:blank` tab.
+Two failures with known fixes:
+- `No page is currently selected` on the first `open` after a fresh launch:
+  run `npx -y chrome-devtools-axi selectpage 1` once and retry. One-time
+  quirk of the initial `about:blank` tab.
+- `BRIDGE_NOT_READY` / "CDP target appears to have gone away": a bridge from
+  an earlier task is stale. `npx -y chrome-devtools-axi stop`, and if that
+  is not enough, `kill` the node process on port 9224
+  (`lsof -nP -iTCP:9224 -sTCP:LISTEN`), then start again.
 
-**Testing the AI path with a real key, without typing it anywhere:** copy
-`.env.example` to `.env` (gitignored) and fill in a real `OPENAI_API_KEY`.
-A browser extension can't read `.env` itself - there's no filesystem or env
-var access from extension code - so seed it into the running test
-session's storage from the shell instead, after an extension page is open
-and selected:
+### Why a separate Chrome for Testing build, and not the user's own Chrome
+
+The user's own Chrome already has this extension installed, and attaching to
+it instead of launching a new browser would be cheaper. It is not the
+default for two reasons:
+
+1. **It would destroy real data.** The seed step below overwrites the
+   `items` key, which is the user's actual saved vocabulary. The
+   `/tmp/english-learner-chrome-profile` profile is disposable; their daily
+   profile is not. If you ever do attach to their Chrome, never seed - add
+   with `LIB.addItem` and delete what you added.
+2. **It needs a one-time manual toggle.** `CHROME_DEVTOOLS_AXI_AUTO_CONNECT=1`
+   requires remote debugging enabled at `chrome://inspect/#remote-debugging`.
+   As of 2026-10-28 it is **off** on this machine, so auto-connect fails.
+   Only an unverified path until someone turns it on and confirms.
+
+Two things also force the launch setup above, both verified against this
+codebase:
+
+- **Branded Google Chrome refuses `--load-extension` outright.** Since
+  Chrome ~137 the official binary ignores `--load-extension` and
+  `--disable-extensions-except` ("--load-extension is not allowed in Google
+  Chrome, ignoring" - confirmed in the binary's strings). A **Chrome for
+  Testing** build works. If `~/.cache/puppeteer/chrome/` is empty, fetch
+  one: `npx -y @puppeteer/browsers install chrome@stable`.
+- **chrome-devtools-axi needs `--categoryExtensions` on the underlying MCP
+  server**, which has no axi env var. It is on by default only in
+  chrome-devtools-mcp's own one-shot CLI mode, not when axi spawns it as an
+  MCP server. The committed wrapper
+  `scripts/chrome-devtools-mcp-wrapper.cjs` injects it, plus
+  `--ignore-default-chrome-arg=--disable-extensions` (Puppeteer's default
+  args disable extensions a second, independent way).
+
+### Driving the microphone
+
+**Follow this as written.** Two obvious-looking approaches both fail, and
+both were paid for already.
+
+Stub `getUserMedia` with a real `MediaStream` carrying a decoded wav. Chrome's
+own fake-audio flags are the trap. Run this once per page load, before the
+first attempt:
+
+```
+W=$(base64 -i word.wav | tr -d '\n')
+npx -y chrome-devtools-axi eval "async () => {
+  navigator.mediaDevices.getUserMedia = async () => {
+    const bin = atob(\"$W\");
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    const ctx = new AudioContext();
+    const buf = await ctx.decodeAudioData(u8.buffer);
+    const dest = ctx.createMediaStreamDestination();
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const gain = ctx.createGain();
+    gain.gain.value = 3;
+    src.connect(gain).connect(dest);
+    setTimeout(() => src.start(), 700);
+    return dest.stream;
+  };
+  return 'mic stubbed';
+}"
+```
+
+Everything downstream is real: the voice-activity detector, `MediaRecorder`,
+the wav encoder, the live Azure call and the UI. Make a clip with
+`say -o x.aiff "definition" && afconvert -f WAVE -d LEI16@16000 -c 1 x.aiff x.wav`.
+
+Three details that are not optional:
+
+- **Start the audio ~700ms late.** The detector learns the room's noise floor
+  from its first few frames. A stream that is already loud becomes the floor
+  itself, the threshold goes up with it, and speech is never detected.
+- **Gain it up (~3x).** A quiet stream sits under `VAD_RMS` and reads as
+  silence.
+- **Re-install it after every `location.reload()`.** It lives on `window`.
+
+**Do not use `--use-file-for-fake-audio-capture`.** It looks like the right
+tool and is not: the file plays **once** per Chrome session rather than
+looping, and Chrome attenuates it to roughly a tenth of its real level. The
+first attempt catches a clipped fragment and every later one records silence,
+so a correctly pronounced word scores ~6% and the IPA comes back as nonsense.
+Hours went into that number before it turned out to be the rig. Verified on
+2026-10-28, Chrome for Testing 131.
+
+**Do not reach for the real microphone either.** It is silent in this setup
+and there is no way to feed it.
+
+To check the encoder alone, without the microphone at all, hand a wav
+straight to the real assessment call:
+
+```
+npx -y chrome-devtools-axi eval "async () => {
+  const bin = atob(\"$W\"); const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  const r = await PRON.azureAssess('definition', 'word', new Blob([u8], { type: 'audio/wav' }));
+  return r.score + ' ' + r.targetIpa;
+}"
+```
+
+A clean `say "definition"` clip scores 96 this way. Anything far below that
+means the recording is wrong, not the pronunciation.
+
+### Seed data
+
+One `eval`, straight into the real storage the extension reads:
+
+```
+npx -y chrome-devtools-axi eval "async () => { const items = [...]; await chrome.storage.local.set({ items }); return items.length }"
+```
+
+Each item needs `id, type, text, meaning, phonetic, audio, example,
+examples, note, date, createdAt`. Use `LIB.todayStr()` for `date` so the
+items land under today in the calendar and the stats tiles.
+
+**Known limitation**: `chrome.contextMenus` items are native OS UI. No
+automation tool can click a native right-click menu item. Call the same code
+the menu click calls instead - `LIB.addItem` / `LIB.enrichItem` are
+available via `eval` on any extension page, so the real save logic still
+runs end to end. Only the native click is skipped.
+
+**Testing the AI and Azure paths with real keys, without typing them
+anywhere:** copy `.env.example` to `.env` (gitignored) and fill in a real
+`OPENAI_API_KEY`, `AZURE_SPEECH_KEY` and `AZURE_SPEECH_REGION`.
+A browser extension cannot read `.env` itself - there is no filesystem or
+env var access from extension code - so seed it into the running session's
+storage from the shell instead, after an extension page is open:
 ```
 source .env
-chrome-devtools-axi eval "async () => { const s = await chrome.storage.local.get('settings'); const settings = s.settings || {}; settings.apiKey = '$OPENAI_API_KEY'; await chrome.storage.local.set({ settings }); return 'seeded'; }"
+npx -y chrome-devtools-axi eval "async () => { const s = await chrome.storage.local.get('settings'); const settings = s.settings || {}; settings.apiKey = '$OPENAI_API_KEY'; settings.azureKey = '$AZURE_SPEECH_KEY'; settings.azureRegion = '$AZURE_SPEECH_REGION'; await chrome.storage.local.set({ settings }); return 'seeded'; }"
 ```
-The key never appears in a prompt, a chat transcript, or git. This is a
-dev/test convenience only - it does not change how the shipped extension
-stores a user's own key, which stays in `chrome.storage.local` via the
-Settings panel (the only storage a browser extension has for a per-user
-secret, with no backend to put it behind).
+The key never appears in a prompt, a transcript, or git. This is a dev
+convenience only - it does not change how the shipped extension stores a
+user's own key.
 
 ### Standard flow to test
 
-1. **Save path (works around the native menu limit)**
-   On any extension page (popup or app), run the same call `background.js`
-   makes on a context-menu click:
+1. **Save path** (works around the native menu limit)
    ```
-   chrome-devtools-axi eval "async () => { const r = await LIB.addItem('ubiquitous'); await LIB.enrichItem(r.id); return chrome.storage.local.get('items'); }"
+   npx -y chrome-devtools-axi eval "async () => { const r = await LIB.addItem('ubiquitous'); await LIB.enrichItem(r.id); return chrome.storage.local.get('items'); }"
    ```
    Check `status` was `added` (or `duplicate` on a repeat) and that
    `meaning`/`example`/`phonetic` land in the stored item.
@@ -150,7 +264,7 @@ secret, with no backend to put it behind).
      and a "Saved! +1" toast appears (`#ui-toast.show`).
    - Switch between the Words/Sentences tabs, confirm counts match storage.
    - Click the speaker icon on a card, confirm no console error (actual
-     audio playback can't be verified by the tool, only that it fired
+     audio playback cannot be verified by the tool, only that it fired
      without throwing).
    - Click delete, confirm the browser's `confirm()` dialog appears
      (`dialog accept`/`dialog dismiss`), and the card is removed on accept.
@@ -166,16 +280,22 @@ secret, with no backend to put it behind).
      goal bar reflects the new target.
    - Prev/next month buttons move the calendar and update the month total.
 
-4. **Regression check** - after any code change, re-run steps 1-3 before
-   calling the change done. If an unrelated visual issue shows up on the
-   way (misaligned card, wrong count, truncated text), fix it in the same
-   pass - don't leave it for later.
+4. **Pronunciation** - see "Driving the microphone" above. Never click
+   **Start speaking** against the machine's real microphone and expect a
+   score; there is nothing to hear.
 
-Take a screenshot (`chrome-devtools-axi screenshot <path>`) of the popup
-and the full page after any UI-affecting change, and look at it with the
-Read tool - don't just trust that the DOM rendered.
+5. **Regression check** - after any code change, re-run steps 1-4 before
+   calling the change done. If an unrelated visual issue shows up on the way
+   (misaligned card, wrong count, truncated text), fix it in the same pass.
 
-When done, stop the bridge: `chrome-devtools-axi stop`.
+Screenshot the popup and the full page after any UI-affecting change
+(`npx -y chrome-devtools-axi screenshot <path>`) and look at it with the
+Read tool. Do not just trust that the DOM rendered. Check the popup at its
+real width (`resize 420 700`, `body.popup` is 380px) as well as the full
+page - the card layout differs between them.
+
+When the whole task is done, and only then:
+`npx -y chrome-devtools-axi stop`.
 
 ## 4. Project conventions
 
@@ -190,10 +310,22 @@ When done, stop the bridge: `chrome-devtools-axi stop`.
 - Match the existing code style: no semicolons omitted, 2-space indent,
   arrow functions, `const`/`let`, no comments except where the WHY is
   non-obvious (see `lib.js` for the pattern already in use).
-- After any change, reload the extension on `chrome://extensions` (or
-  relaunch via chrome-devtools-axi) before testing - stale service workers
-  hide real bugs.
-- Never commit a real OpenAI API key. Settings are stored in
+- After changing `manifest.json` or `background.js`, reload the extension
+  before testing - stale service workers hide real bugs. For every other
+  file a tab reload is enough (see section 3, Cost rules).
+- **Azure is the only pronunciation grader.** Do not add a speech-to-text
+  fallback: a transcript cannot prove the sounds were right, because its
+  language model corrects a mispronounced word back into the real one. A
+  grader that cannot fail an attempt is worse than no grader. If Azure is
+  unavailable, say so - never fill the gap with a made-up score.
+- Four settings in `PRON.assessConfig` are load-bearing, so change them only
+  on purpose: `PhonemeAlphabet: 'IPA'` (the default SAPI spells "tion" as
+  "shaxn", which means nothing to a learner), `NBestPhonemeCount` (what the
+  learner actually said, not just whether it was right),
+  `EnableProsodyAssessment` (stress and rhythm), and `EnableMiscue`, which is
+  on for sentences and **off** for single words - on a word it scores a
+  learner who simply says it twice near zero.
+- Never commit a real OpenAI API key or Azure Speech key. Settings are stored in
   `chrome.storage.local`, local to the browser, and must stay that way -
   don't add any remote sync or server-side storage without asking first.
 - Keep `README.md`'s install/use instructions in sync with any UI or flow

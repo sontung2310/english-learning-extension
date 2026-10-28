@@ -10,7 +10,12 @@ const LIB = (() => {
   // ---------- storage ----------
   async function getItems() {
     const { items = [] } = await chrome.storage.local.get('items');
-    return items;
+    // Old items saved before examples/chat existed get sane defaults.
+    return items.map((i) => ({
+      examples: i.example ? [i.example] : [],
+      chat: [],
+      ...i,
+    }));
   }
 
   async function getSettings() {
@@ -107,12 +112,9 @@ const LIB = (() => {
     return { meaning, example: best.example || '', phonetic, audio };
   }
 
-  async function askOpenAI(apiKey, text, type) {
-    const prompt =
-      type === 'word'
-        ? `Explain the English word "${text}" for a learner with basic English. Reply with JSON only, no other text: {"meaning":"simple meaning in one short sentence","example":"one short example sentence"}`
-        : `Explain this English sentence for a learner with basic English. Reply with JSON only, no other text: {"meaning":"what it means, in simple English, 1 or 2 short sentences","example":"one other short example that uses a similar idea or phrase"}\n\nSentence: ${text}`;
-
+  // Low-level call shared by every OpenAI feature (meaning lookup, more
+  // examples, ask-a-question).
+  async function openaiChat(apiKey, messages, jsonMode) {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -122,8 +124,8 @@ const LIB = (() => {
       body: JSON.stringify({
         model: MODEL,
         max_tokens: 300,
-        response_format: { type: 'json_object' },
-        messages: [{ role: 'user', content: prompt }],
+        ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
+        messages,
       }),
     });
     if (!res.ok) {
@@ -131,10 +133,78 @@ const LIB = (() => {
       throw new Error((err.error && err.error.message) || `HTTP ${res.status}`);
     }
     const json = await res.json();
-    const reply = (json.choices && json.choices[0] && json.choices[0].message.content) || '';
+    return (json.choices && json.choices[0] && json.choices[0].message.content) || '';
+  }
+
+  async function askOpenAI(apiKey, text, type) {
+    const prompt =
+      type === 'word'
+        ? `Explain the English word "${text}" for a learner with basic English. Reply with JSON only, no other text: {"meaning":"simple meaning in one short sentence","example":"one short example sentence"}`
+        : `Explain this English sentence for a learner with basic English. Reply with JSON only, no other text: {"meaning":"what it means, in simple English, 1 or 2 short sentences","example":"one other short example that uses a similar idea or phrase"}\n\nSentence: ${text}`;
+
+    const reply = await openaiChat(apiKey, [{ role: 'user', content: prompt }], true);
     const match = reply.match(/\{[\s\S]*\}/);
     if (!match) throw new Error('Bad reply from AI');
     return JSON.parse(match[0]);
+  }
+
+  // Ask for one more example sentence, different from the ones already saved.
+  async function addExample(id) {
+    const item = (await getItems()).find((i) => i.id === id);
+    if (!item) return { error: 'not-found' };
+    const { apiKey } = await getSettings();
+    if (!apiKey) return { error: 'no-key' };
+
+    const existing = item.examples.length ? item.examples : item.example ? [item.example] : [];
+    const prompt = `Give one more short example sentence using the English ${item.type} "${item.text}"${
+      item.meaning ? ` (meaning: ${item.meaning})` : ''
+    }. It must be different from these existing examples: ${JSON.stringify(
+      existing
+    )}. Reply with JSON only, no other text: {"example":"the new example sentence"}`;
+
+    try {
+      const reply = await openaiChat(apiKey, [{ role: 'user', content: prompt }], true);
+      const match = reply.match(/\{[\s\S]*\}/);
+      const example = match && JSON.parse(match[0]).example;
+      if (!example) throw new Error('Bad reply from AI');
+      await updateItem(id, { examples: [...existing, example] });
+      return { status: 'added' };
+    } catch (e) {
+      return { error: 'request-failed', message: e.message };
+    }
+  }
+
+  // Ask a free-form question about a saved word/sentence, keeping a per-item
+  // chat thread so follow-up questions have context.
+  async function askAboutItem(id, question) {
+    const item = (await getItems()).find((i) => i.id === id);
+    if (!item) return { error: 'not-found' };
+    const { apiKey } = await getSettings();
+    if (!apiKey) return { error: 'no-key' };
+
+    const chat = item.chat;
+    const userMsg = { role: 'user', content: question, ts: Date.now() };
+    await updateItem(id, { chat: [...chat, userMsg] });
+
+    const system = `You are helping an English learner understand the ${item.type} "${item.text}"${
+      item.meaning ? ` (meaning: ${item.meaning})` : ''
+    }. Answer their questions simply and briefly.`;
+    const messages = [
+      { role: 'system', content: system },
+      ...chat.map((m) => ({ role: m.role, content: m.content })),
+      { role: 'user', content: question },
+    ];
+
+    try {
+      const reply = await openaiChat(apiKey, messages, false);
+      await updateItem(id, { chat: [...chat, userMsg, { role: 'assistant', content: reply.trim(), ts: Date.now() }] });
+      return { status: 'answered' };
+    } catch (e) {
+      await updateItem(id, {
+        chat: [...chat, userMsg, { role: 'assistant', content: `(error: ${e.message})`, ts: Date.now() }],
+      });
+      return { error: 'request-failed', message: e.message };
+    }
   }
 
   // Fill meaning, pronunciation and example for one saved item.
@@ -221,7 +291,10 @@ const LIB = (() => {
     classify,
     addItem,
     lookupWord,
+    openaiChat,
     askOpenAI,
+    addExample,
+    askAboutItem,
     enrichItem,
     computeStreak,
     speak,

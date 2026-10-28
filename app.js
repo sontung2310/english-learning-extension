@@ -70,7 +70,7 @@ function renderList() {
     bar.append(UI.el('span', 'muted', `All days (${list.length} ${tabName()})`));
   }
 
-  UI.renderGrouped($('list'), list, UI.emptyText(tab));
+  UI.renderGrouped($('list'), list, UI.emptyText(tab), { enableSpeech: true });
 }
 
 function render() {
@@ -127,12 +127,16 @@ $('gear').onclick = async () => {
     const s = await LIB.getSettings();
     $('apiKey').value = s.apiKey || '';
     $('dailyGoal').value = s.dailyGoal || LIB.DEFAULT_GOAL;
+    $('azureKey').value = s.azureKey || '';
+    $('azureRegion').value = s.azureRegion || '';
   }
 };
 
 $('saveKey').onclick = async () => {
   const s = await LIB.getSettings();
   s.apiKey = $('apiKey').value.trim();
+  s.azureKey = $('azureKey').value.trim();
+  s.azureRegion = $('azureRegion').value.trim().toLowerCase();
   const goal = parseInt($('dailyGoal').value, 10);
   s.dailyGoal = Number.isFinite(goal) && goal > 0 ? goal : LIB.DEFAULT_GOAL;
   await LIB.saveSettings(s);

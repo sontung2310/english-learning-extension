@@ -8,14 +8,22 @@
 <body class="page">
   <div class="bar">
     <h1>English Learner</h1>
-    <button id="gear" class="ghost">Settings</button>
+    <span class="bar-actions">
+      <button id="gear" class="ghost">Settings</button>
+    </span>
   </div>
 
   <section id="settings" class="settings" hidden>
-    <label for="apiKey">OpenAI API key (used for sentence meanings)</label>
+    <label for="apiKey">OpenAI API key (sentence meanings and coach feedback)</label>
     <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off">
     <label for="dailyGoal">Daily goal (words + sentences)</label>
     <input id="dailyGoal" type="number" min="1" step="1" placeholder="5">
+
+    <label for="azureKey">Azure Speech key (for pronunciation scoring)</label>
+    <input id="azureKey" type="password" placeholder="Azure Speech resource key" autocomplete="off">
+    <label for="azureRegion">Azure region</label>
+    <input id="azureRegion" type="text" placeholder="e.g. southeastasia" autocomplete="off">
+
     <div class="row">
       <button id="saveKey" class="primary">Save</button>
       <span id="saveMsg" class="muted"></span>
@@ -49,6 +57,7 @@
   </div>
 
   <script src="lib.js"></script>
+  <script src="pronounce.js"></script>
   <script src="ui.js"></script>
   <script src="app.js"></script>
 </body>

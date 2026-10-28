@@ -38,6 +38,7 @@ h1 { font-size: 19px; font-weight: 800; letter-spacing: -.01em; margin: 0; }
 h3.day { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-muted); margin: 18px 0 6px; font-weight: 700; }
 
 .bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.bar-actions { display: flex; gap: 8px; }
 
 button { font: inherit; cursor: pointer; }
 .ghost, .primary {
@@ -80,17 +81,39 @@ button { font: inherit; cursor: pointer; }
 
 .card {
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md);
-  padding: 10px 12px; margin-bottom: 8px;
+  padding: 10px 12px 10px 10px; margin-bottom: 8px;
+  border-left: 3px solid var(--rail, var(--border-strong));
   transition: border-color .15s var(--ease), box-shadow .15s var(--ease), transform .15s var(--ease);
   animation: fadeInUp .3s var(--ease) both;
 }
-.card:hover { border-color: #d7ddf0; transform: translateY(-1px); box-shadow: var(--shadow-hover); }
+.card:hover { border-color: #d7ddf0; border-left-color: var(--rail, var(--border-strong)); transform: translateY(-1px); box-shadow: var(--shadow-hover); }
+/* Stable per-word rail colours. Decorative: they make the list easy to scan,
+   they do not encode progress. */
+.card.rail-0 { --rail: #2563eb; }
+.card.rail-1 { --rail: #16a34a; }
+.card.rail-2 { --rail: #f97316; }
+.card.rail-3 { --rail: #7c3aed; }
+.card.rail-4 { --rail: #0d9488; }
+.card.rail-5 { --rail: #db2777; }
+.card.rail-6 { --rail: #ca8a04; }
+.card.rail-7 { --rail: #0891b2; }
+.card.rail-8 { --rail: #dc2626; }
+.card.rail-9 { --rail: #65a30d; }
+.card.rail-10 { --rail: #4f46e5; }
+.card.rail-11 { --rail: #c026d3; }
 .card .top { display: flex; align-items: baseline; gap: 8px; }
 .card .term { font-weight: 700; font-size: 16px; word-break: break-word; }
 .card .phonetic { color: var(--ink-muted); }
 .card .spacer { flex: 1; }
 .card .meaning { margin-top: 4px; }
-.card .example { margin-top: 4px; color: #4b5563; font-style: italic; }
+.card .example { color: #4b5563; }
+.card .example .val { font-style: italic; }
+.card .meaning, .card .example { display: flex; gap: 8px; }
+.card .tag {
+  flex: none; min-width: 54px; font-size: 10px; font-weight: 600; line-height: 21px;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--accent);
+}
+.card .example .tag { color: var(--streak); }
 .card .note { margin-top: 4px; font-size: 12px; color: var(--warning); }
 .icon {
   border: none; background: none; padding: 2px 4px; border-radius: 6px; font-size: 14px; opacity: .7;
@@ -102,6 +125,106 @@ button { font: inherit; cursor: pointer; }
 
 .empty { color: var(--ink-muted); padding: 24px 8px; text-align: center; animation: fadeInUp .3s var(--ease) both; }
 .muted { color: var(--ink-muted); font-size: 12px; }
+
+/* examples list */
+.card .examples { margin-top: 4px; display: flex; flex-direction: column; gap: 2px; }
+.card .examples .link { margin-top: 2px; align-self: flex-start; }
+
+/* ask a question */
+.card .ask { margin-top: 6px; }
+.chat-panel { margin-top: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px; background: var(--bg); }
+.chat-thread { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
+.chat-thread .bubble { padding: 6px 10px; border-radius: var(--radius-sm); font-size: 13px; max-width: 90%; }
+.chat-thread .bubble.user { background: var(--accent-soft); align-self: flex-end; }
+.chat-thread .bubble.assistant { background: var(--surface); border: 1px solid var(--border); align-self: flex-start; }
+.chat-row { display: flex; gap: 6px; }
+.chat-row .chat-input {
+  flex: 1; padding: 7px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); font: inherit;
+}
+.chat-row .chat-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+/* pronunciation practice */
+.card .practice {
+  margin-top: 10px; padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--bg);
+}
+.practice-head { display: flex; align-items: center; gap: 8px; }
+.practice-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-muted); }
+.ghost.tiny { padding: 3px 8px; font-size: 12px; }
+
+.pron-stage { margin-top: 8px; }
+.pron-stage .hint { margin-top: 4px; }
+.mic-btn { display: inline-flex; align-items: center; gap: 6px; }
+
+/* listening row */
+.pron-live { display: flex; align-items: center; gap: 10px; }
+.pron-status { font-weight: 600; font-size: 13px; }
+.pron-countdown { font-size: 12px; color: var(--ink-muted); font-variant-numeric: tabular-nums; min-width: 26px; text-align: right; }
+.meter { display: flex; align-items: center; gap: 3px; height: 22px; flex: none; }
+.meter .bar {
+  width: 4px; height: 100%; border-radius: 2px; background: var(--accent);
+  transform: scaleY(.22); transition: transform .07s linear;
+}
+
+/* result */
+.pron-line { font-size: 19px; font-weight: 700; letter-spacing: .01em; }
+.pron-line .ok { color: var(--success); }
+.pron-line .bad { color: var(--danger); text-decoration: underline wavy var(--danger) 1.5px; text-underline-offset: 3px; }
+.pron-line .sep { color: var(--border-strong); margin: 0 1px; font-weight: 400; }
+.pron-scorerow { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.pron-score { font-weight: 800; font-size: 15px; padding: 1px 8px; border-radius: 999px; color: #fff; font-variant-numeric: tabular-nums; }
+.pron-score.great { background: var(--success); }
+.pron-score.good { background: var(--accent); }
+.pron-score.ok { background: var(--streak); }
+.pron-score.poor { background: var(--danger); }
+.pron-label { font-weight: 600; font-size: 13px; }
+/* result: target IPA against the sounds that actually came out */
+.result { display: grid; gap: 6px; }
+/* a grid, not a flex row: the two IPA values must line up under each other
+   for the comparison to read at a glance, whatever the labels are called. */
+.ipa-row { display: grid; grid-template-columns: 76px 1fr; align-items: baseline; gap: 10px; }
+.ipa-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+.ipa { font-size: 18px; font-weight: 700; letter-spacing: .02em; }
+.ipa .slash { color: var(--border-strong); font-weight: 400; }
+
+.pron-line.syllables { font-size: 16px; }
+.pron-line.words { font-size: 17px; line-height: 1.75; }
+.pron-line .tappable { cursor: pointer; border-radius: 4px; padding: 0 2px; }
+.pron-line .tappable:hover { background: var(--accent-soft); }
+
+/* PTE-style report card: one row per dimension */
+.pte-caption { font-size: 11px; margin-top: 8px; }
+.pte-row { display: grid; grid-template-columns: 94px 1fr 32px; gap: 4px 8px; align-items: center; font-size: 12px; }
+.pte-label { font-weight: 700; }
+.pte-track { height: 7px; border-radius: 999px; background: var(--border); overflow: hidden; }
+.pte-fill { height: 100%; border-radius: 999px; transition: width .35s ease; }
+.pte-fill.great { background: var(--success); }
+.pte-fill.good { background: var(--accent); }
+.pte-fill.ok { background: var(--streak); }
+.pte-fill.poor { background: var(--danger); }
+.pte-num { font-weight: 800; font-variant-numeric: tabular-nums; text-align: right; }
+.pte-num.great { color: var(--success); }
+.pte-num.good { color: var(--accent); }
+.pte-num.ok { color: var(--streak); }
+.pte-num.poor { color: var(--danger); }
+.pte-note { grid-column: 2 / -1; font-size: 11px; }
+.pte-note:empty { display: none; }
+
+/* one word of a sentence, opened up */
+.word-detail:empty { display: none; }
+.word-detail {
+  margin-top: 2px; padding: 8px 10px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--surface); display: grid; gap: 5px;
+}
+.word-detail-head { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.word-flag { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--danger); }
+.pron-score.tiny-score { font-size: 11px; padding: 1px 6px; }
+.grade-detail { margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+.pron-heard { margin-top: 5px; }
+.pron-error { color: var(--warning); font-size: 13px; margin-bottom: 8px; }
+.pron-stage .mic-btn { margin-top: 10px; }
+.tutor-feedback { margin-top: 8px; font-size: 13px; line-height: 1.45; }
 
 /* full page */
 .layout { display: grid; grid-template-columns: 320px 1fr; gap: 20px; align-items: start; }
