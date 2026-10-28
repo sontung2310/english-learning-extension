@@ -80,8 +80,16 @@ that, the word is split into syllables, also coloured, so you can see which
 part to practise.
 
 The target line comes from the free dictionary when it has the word, because
-its IPA carries stress marks. For anything the dictionary does not know, Azure's
-own reference sounds stand in.
+its IPA carries stress marks. The dictionary lists both a British and an
+American transcription; the American one is used, so the text, the audio
+behind the speaker button and Azure's en-US scoring all describe one accent.
+Inflected forms like "revamped" often have an entry but no transcription, and
+some words have no entry at all - the AI fills those in. For a word that has
+been spoken, Azure's own reference sounds stand in.
+
+IPA is shown the way learner dictionaries print it. Wiktionary and Azure both
+use the strict symbols `ɹ` and `ɡ`; Cambridge, Oxford and Longman all use `r`
+and `g`, so those are what you see.
 
 **A sentence** is marked the way a PTE Speaking examiner marks a read-aloud:
 
@@ -94,6 +102,12 @@ own reference sounds stand in.
 
 Under the bars, every word is coloured by its own score, with skipped and
 inserted words called out. Tap any word to open its own IPA comparison.
+
+**How long you get to speak** scales with what you are saying. A single word
+allows 15 seconds and treats a 1.6 second pause as the end. A sentence gets
+roughly 1.5 seconds per word on top of a 6 second head start, up to a minute,
+and waits 2.5 seconds before deciding you have finished - long enough to
+breathe between phrases without being cut off.
 
 ## Tests
 

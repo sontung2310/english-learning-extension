@@ -199,6 +199,26 @@ Hours went into that number before it turned out to be the rig. Verified on
 **Do not reach for the real microphone either.** It is silent in this setup
 and there is no way to feed it.
 
+**Pass the anti-throttling flags when launching Chrome yourself.** Chrome
+throttles `setInterval` to once a second as soon as its window falls behind
+another, and the detector's 50ms loop silently becomes a 1s loop: the noise
+floor is then measured over six seconds instead of 300ms, with the user's own
+voice inside it. The suite failed in a different place on every run depending
+on where the window happened to be. Puppeteer passes these by default, so
+only hand-rolled launches need them:
+
+```
+--disable-background-timer-throttling
+--disable-backgrounding-occluded-windows
+--disable-renderer-backgrounding
+--disable-features=CalculateNativeWinOcclusion
+```
+
+When an attempt fails and the reason is not obvious, the suite wraps
+`PRON.createSession` and reports the session's own timeline - states, ticks
+and the final result - in the failure message. Read that before forming a
+theory; four plausible theories died against it.
+
 To check the encoder alone, without the microphone at all, hand a wav
 straight to the real assessment call:
 
@@ -325,6 +345,19 @@ When the whole task is done, and only then:
   `EnableProsodyAssessment` (stress and rhythm), and `EnableMiscue`, which is
   on for sentences and **off** for single words - on a word it scores a
   learner who simply says it twice near zero.
+- Recording clocks come from `PRON.limitsFor(targetText)`, never from the
+  bare constants. A learner reading a sentence is slow and pauses between
+  phrases, so both the hard cap and the end-of-speech pause scale with word
+  count; the single-word values would cut them off mid-sentence.
+- Pronunciation sources must agree on one accent. `lookupWord` picks the
+  American transcription and its matching `-us.mp3` together, because Azure
+  scores `en-US`. Taking the bare `phonetic` field instead gives the British
+  one, which contradicts both the audio and the scoring.
+- IPA reaches the screen through `LIB.readableIpa`, which swaps the strict
+  symbols `ɹ` and `ɡ` for the `r` and `g` every learner dictionary prints. It
+  is display only - stored text and anything sent to Azure stay strict. Add
+  new IPA render paths through it, or the two lines of a comparison will
+  spell the same sound differently.
 - Never commit a real OpenAI API key or Azure Speech key. Settings are stored in
   `chrome.storage.local`, local to the browser, and must stay that way -
   don't add any remote sync or server-side storage without asking first.

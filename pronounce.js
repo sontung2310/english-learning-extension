@@ -11,13 +11,55 @@ const PRON = (() => {
   // Every timer is anchored on the microphone actually going live, never on
   // the click, so a slow mic does not eat the user's speaking time.
   const WAIT_FOR_SPEECH_MS = 10000; // silence allowed before the first word
-  const END_SILENCE_MS = 1600; // pause after speech that ends the attempt
-  const MAX_MS = 15000; // hard cap on one attempt
+  const END_SILENCE_MS = 1600; // pause after one word that ends the attempt
+  const MAX_MS = 15000; // hard cap on one word
+  // A learner reading a sentence aloud is slow and pauses between phrases.
+  // Both clocks have to grow with the sentence: the hard cap, or they are cut
+  // off before the last word, and the end-of-speech pause, or a breath in the
+  // middle is mistaken for the end.
+  const SENTENCE_END_SILENCE_MS = 2500; // a phrase break is not the end
+  const PER_WORD_MS = 1500; // unhurried learner pace, with room to spare
+  const SENTENCE_LEAD_MS = 6000; // getting started, and a breath at the end
+  const MAX_SENTENCE_MS = 60000; // nothing holds the microphone longer
   const VAD_RMS = 0.015; // mic energy that counts as speech
-  const VAD_FRAMES = 3; // consecutive loud frames before trusting it
+  // How long sound must hold before it counts as speech. Wall clock, not a
+  // frame count: frames are 50ms apart only while the tab is in front, and
+  // Chrome throttles them to one a second in the background, where "three
+  // frames" quietly becomes "three seconds of talking" and short words are
+  // never noticed at all.
+  const VAD_SPEECH_MS = 150;
+  // However noisy the room, a threshold past this would sit above ordinary
+  // speech, and the microphone would appear to be dead.
+  const VAD_CEILING = 0.07;
   const TARGET_RATE = 16000; // Azure's documented rate for assessment
   const OK_SCORE = 70; // Azure accuracy at or above this reads as correct
   const NBEST_PHONEMES = 3; // alternatives per sound, to show what was said
+
+  // How long this particular target is allowed to take. One word keeps the
+  // short clocks; anything longer is scaled by its word count.
+  function limitsFor(targetText) {
+    const words = (targetText || '').trim().split(/\s+/).filter(Boolean).length;
+    if (words <= 1) return { maxMs: MAX_MS, endSilenceMs: END_SILENCE_MS };
+    return {
+      maxMs: Math.min(MAX_SENTENCE_MS, Math.max(MAX_MS, words * PER_WORD_MS + SENTENCE_LEAD_MS)),
+      endSilenceMs: SENTENCE_END_SILENCE_MS,
+    };
+  }
+
+  // The room's noise floor, taken as the QUIETEST frame rather than the
+  // average of them.
+  //
+  // The average is wrong whenever sound arrives during calibration, and it
+  // does: a learner who presses start and speaks straight away, or a tab in
+  // the background, where Chrome throttles timers to one frame a second and
+  // "the first few frames" stretches over six seconds of talking. Averaging
+  // then puts the floor - and the threshold above it - higher than the voice
+  // it is supposed to notice, and the attempt fails with "I did not hear
+  // anything" no matter how loudly the user speaks. The quietest frame
+  // survives all of that; it is only wrong if every frame was loud.
+  const noiseFloor = (frames) => (frames.length ? Math.min(...frames) : 0);
+
+  const vadThreshold = (floor) => Math.min(VAD_CEILING, Math.max(VAD_RMS, floor * 2.5 + 0.01));
 
   function scoreLabel(score) {
     if (score >= 90) return 'Excellent';
@@ -342,7 +384,8 @@ const PRON = (() => {
   // Microphone energy alone decides when speech starts and ends. No recogniser
   // is involved, so the attempt starts instantly, never needs the network, and
   // cannot be cut off mid-word by someone else's endpointer.
-  function createSession(handlers = {}) {
+  function createSession(targetText, handlers = {}) {
+    const { maxMs, endSilenceMs } = limitsFor(targetText);
     const emit = (name, ...args) => {
       if (typeof handlers[name] === 'function') handlers[name](...args);
     };
@@ -350,7 +393,7 @@ const PRON = (() => {
     let finished = false;
     let cancelled = false;
     let speechStarted = false;
-    let loudFrames = 0;
+    let loudSince = null;
     let deadline = 0;
 
     let waitTimer = null;
@@ -424,7 +467,7 @@ const PRON = (() => {
 
     const armEndOfSpeech = () => {
       clearTimeout(silenceTimer);
-      silenceTimer = setTimeout(() => finish('ok'), END_SILENCE_MS);
+      silenceTimer = setTimeout(() => finish('ok'), endSilenceMs);
     };
 
     function noteSpeech() {
@@ -432,13 +475,13 @@ const PRON = (() => {
       if (!speechStarted) {
         speechStarted = true;
         clearTimeout(waitTimer);
-        deadline = Date.now() + MAX_MS;
+        deadline = Date.now() + maxMs;
         emit('onState', 'speaking');
         // Enforce the cap the countdown is promising. Without this, someone
         // talking continuously keeps re-arming the end-of-speech timer and the
         // countdown sits at 0 while the attempt runs on.
         clearTimeout(capTimer);
-        capTimer = setTimeout(() => finish('ok'), MAX_MS);
+        capTimer = setTimeout(() => finish('ok'), maxMs);
       }
       armEndOfSpeech();
     }
@@ -450,7 +493,7 @@ const PRON = (() => {
       deadline = Date.now() + WAIT_FOR_SPEECH_MS;
       emit('onState', 'listening');
       waitTimer = setTimeout(() => finish('no-speech'), WAIT_FOR_SPEECH_MS);
-      capTimer = setTimeout(() => finish('ok'), MAX_MS + WAIT_FOR_SPEECH_MS);
+      capTimer = setTimeout(() => finish('ok'), maxMs + WAIT_FOR_SPEECH_MS);
       tickTimer = setInterval(() => {
         if (!finished) emit('onTick', Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
       }, 250);
@@ -510,17 +553,18 @@ const PRON = (() => {
           if (floor === null) {
             floorFrames.push(rms);
             if (floorFrames.length < 6) return; // still calibrating
-            floor = floorFrames.reduce((a, b) => a + b, 0) / floorFrames.length;
+            floor = noiseFloor(floorFrames);
           }
-          const threshold = Math.max(VAD_RMS, floor * 2.5 + 0.01);
+          const threshold = vadThreshold(floor);
 
           // Only sound re-arms the end-of-speech timer. Silence must be left
           // alone so the timer can actually run down - re-arming it here would
           // keep the attempt open until the hard cap.
           if (rms > threshold) {
-            if (++loudFrames >= VAD_FRAMES) noteSpeech();
+            if (loudSince === null) loudSince = Date.now();
+            if (Date.now() - loudSince >= VAD_SPEECH_MS) noteSpeech();
           } else {
-            loudFrames = 0;
+            loudSince = null;
           }
         }, 50);
       } catch (e) {
@@ -563,6 +607,9 @@ const PRON = (() => {
 
   return {
     scoreLabel,
+    limitsFor,
+    noiseFloor,
+    vadThreshold,
     phonemeSlot,
     collapseSlots,
     ipaOf,

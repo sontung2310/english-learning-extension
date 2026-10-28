@@ -155,6 +155,17 @@ window.__azureCalls = [];
         status: 200, headers: { 'content-type': 'application/json' },
       });
     }
+    if (href.includes('api.dictionaryapi.dev')) {
+      return new Response(JSON.stringify([{
+        word: 'revamp',
+        phonetic: '/\u0279i\u02d0\u02c8vamp/',
+        phonetics: [
+          { text: '/\u0279i\u02d0\u02c8vamp/', audio: '' },
+          { text: '/\u0279i\u02c8v\u00e6mp/', audio: 'https://api.dictionaryapi.dev/media/pronunciations/en/revamp-us.mp3' },
+        ],
+        meanings: [{ partOfSpeech: 'verb', definitions: [{ definition: 'To revise something.', example: 'They revamped the site.' }] }],
+      }]), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
     if (href.includes('api.openai.com')) {
       return new Response(JSON.stringify({
         choices: [{ message: { content: '{"feedback":"Nice work. Round your lips a little more on the last sound."}' } }],
@@ -170,6 +181,10 @@ window.__azureCalls = [];
   navigator.mediaDevices.getUserMedia = async () => {
     if (window.__denyMic) { const e = new Error('denied'); e.name = 'NotAllowedError'; throw e; }
     const ctx = new AudioContext();
+    // A context can start suspended, and a suspended one emits pure silence -
+    // the detector then correctly reports "I did not hear anything" and the
+    // whole suite fails for a reason that has nothing to do with the code.
+    if (ctx.state === 'suspended') await ctx.resume();
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     gain.gain.value = 0;
@@ -178,9 +193,23 @@ window.__azureCalls = [];
     osc.connect(gain).connect(dest);
     osc.start();
     window.__speak = (on) => { gain.gain.value = on ? 0.4 : 0; };
-    if (!window.__staySilent) {
-      setTimeout(() => window.__speak && window.__speak(true), 700);
-      setTimeout(() => window.__speak && window.__speak(false), 2400);
+    // The tone must not start until the detector has finished learning the
+    // room's noise floor from its first frames. 700ms looked like enough and
+    // was not: opening the context sometimes takes longer than that, the floor
+    // is then measured on the tone itself, the threshold rises above it, and
+    // the attempt fails with "I did not hear anything" perhaps one run in
+    // three. The wait before the first word is 10s, so this is cheap insurance.
+    const SPEAK_AT = 1500;
+    if (window.__gap) {
+      // Speak, pause for two seconds the way a learner breathes between
+      // phrases, then speak again.
+      setTimeout(() => window.__speak && window.__speak(true), SPEAK_AT);
+      setTimeout(() => window.__speak && window.__speak(false), SPEAK_AT + 1000);
+      setTimeout(() => window.__speak && window.__speak(true), SPEAK_AT + 3000);
+      setTimeout(() => window.__speak && window.__speak(false), SPEAK_AT + 4300);
+    } else if (!window.__staySilent) {
+      setTimeout(() => window.__speak && window.__speak(true), SPEAK_AT);
+      setTimeout(() => window.__speak && window.__speak(false), SPEAK_AT + 1700);
     }
     return dest.stream;
   };
@@ -279,12 +308,35 @@ async function until(term, predicate, timeoutMs, label) {
     if (predicate(last)) return last;
     await sleep(120);
   }
-  throw new Error(`timeout waiting for ${label}; last = ${JSON.stringify(last)}`);
+  const trace = await ev('JSON.stringify({ trace: window.__trace, peak: window.__peak })');  // what the session actually did
+  throw new Error(`timeout waiting for ${label};\n        trace = ${trace}\n        last = ${JSON.stringify(last)}`);
 }
+
+const TRACE = `(() => {
+  if (window.__traced) return 'already';
+  window.__traced = true;
+  window.__trace = [];
+  const t0 = Date.now();
+  const real = PRON.createSession;
+  PRON.createSession = (target, handlers = {}) => {
+    window.__trace.push([0, 'session(' + JSON.stringify(target) + ')']);
+    const wrapped = {};
+    for (const k of ['onState', 'onDone', 'onLevel', 'onTick']) {
+      wrapped[k] = (...a) => {
+        if (k === 'onLevel') window.__peak = Math.max(window.__peak || 0, a[0]);
+        else window.__trace.push([Date.now() - t0, k + ' ' + JSON.stringify(a[0] && a[0].audio ? { audio: a[0].audio.size } : a[0])]);
+        if (handlers[k]) return handlers[k](...a);
+      };
+    }
+    return real(target, wrapped);
+  };
+  return 'traced';
+})()`;
 
 async function scenario(reply, extra = '') {
   await ev('location.reload()');
   await sleep(1400);
+  await ev(TRACE);
   // After the reload: the injected stub runs on every new document and would
   // overwrite these.
   await ev(`window.__azure = ${JSON.stringify(reply)}; window.__azureStatus = 200; window.__azureCalls = []; ${extra}`);
@@ -308,6 +360,16 @@ try {
       '--use-fake-device-for-media-capture',
       '--use-fake-ui-for-media-stream',
       '--autoplay-policy=no-user-gesture-required',
+      // Without these, Chrome throttles setInterval to once a second the
+      // moment this window falls behind another, and the microphone's
+      // 50ms detector loop silently becomes a 1s one. That broke the suite
+      // in a different place on every run, depending on where the window
+      // happened to be. Puppeteer passes all three by default; this suite
+      // builds its own argument list and so has to pass them itself.
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+      '--disable-features=CalculateNativeWinOcclusion',
       '--no-first-run',
       '--no-default-browser-check',
     ],
@@ -346,7 +408,11 @@ try {
 
   // ===== a word, said well =====
   p = await attempt('definition', 'goodWord');
-  check('a good attempt is scored', p.score === '96%', `score=${p.score} error=${p.error}`);
+  check(
+    'a good attempt is scored',
+    p.score === '96%',
+    `score=${p.score} error=${p.error}\n        trace=${await ev('JSON.stringify(window.__trace)')}`
+  );
   check('score is styled for the top band', (p.scoreClass || '').includes('great'), p.scoreClass);
   check('label reads Excellent', p.label === 'Excellent', `label=${p.label}`);
 
@@ -488,6 +554,66 @@ try {
   check('a skipped word says it was skipped', /not said/.test(s.detail), `detail=${s.detail}`);
   check('a skipped word shows no invented IPA', s.detailIpa.length === 0, JSON.stringify(s.detailIpa));
 
+  await ev(`document.querySelector('.tabs button[data-tab="word"]').click()`);
+  await sleep(300);
+
+  // ===== the IPA on a freshly saved word =====
+  await scenario('goodWord');
+  const saved = await ev(`(async () => {
+    const r = await LIB.addItem('revamp');
+    if (r.status !== 'added') return { status: r.status };
+    await LIB.enrichItem(r.id);
+    const it = (await LIB.getItems()).find(i => i.id === r.id);
+    return { stored: it.phonetic, shown: LIB.readableIpa(it.phonetic), audio: it.audio };
+  })()`);
+  check(
+    'a saved word gets its IPA without being asked',
+    !!saved.stored,
+    `nothing stored: ${JSON.stringify(saved)}`
+  );
+  check(
+    'the IPA is the American one, matching the audio we play and the accent Azure scores',
+    saved.stored === '/\u0279i\u02c8v\u00e6mp/',
+    `stored=${saved.stored} - the British /\u0279i\u02d0\u02c8vamp/ would contradict the -us.mp3 audio`
+  );
+  check(
+    'the audio is the American clip, from the same entry as the text',
+    /revamp-us\.mp3$/.test(saved.audio || ''),
+    `audio=${saved.audio}`
+  );
+  check(
+    'strict IPA symbols are shown as the ones learner dictionaries print',
+    saved.shown === '/ri\u02c8v\u00e6mp/',
+    `shown=${saved.shown} - \u0279 reads as a broken character to a learner`
+  );
+
+  // ===== a pause mid-sentence must not end the attempt =====
+  // The reported bug: reading a sentence aloud, a breath between phrases was
+  // read as the end and the learner was cut off halfway.
+  const timeAttempt = async (term, tab) => {
+    await scenario('goodWord', 'window.__gap = true');
+    if (tab) {
+      await ev(`document.querySelector('.tabs button[data-tab="${tab}"]').click()`);
+      await sleep(400);
+    }
+    const started = Date.now();
+    await ev(CLICK(term, 'Start speaking'));
+    await until(term, (x) => x.score !== null || x.error !== null, 30000, `${term} verdict`);
+    return Date.now() - started;
+  };
+
+  const wordMs = await timeAttempt('definition', 'word');
+  const sentenceMs = await timeAttempt(TERM, 'sentence');
+  check(
+    'a two-second pause ends a single-word attempt',
+    wordMs < 7000,
+    `${wordMs}ms - one word should not wait around`
+  );
+  check(
+    'the same pause does not end a sentence attempt',
+    sentenceMs > wordMs + 1500,
+    `word ${wordMs}ms vs sentence ${sentenceMs}ms - a breath between phrases must not cut the learner off`
+  );
   await ev(`document.querySelector('.tabs button[data-tab="word"]').click()`);
   await sleep(300);
 

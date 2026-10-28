@@ -352,6 +352,80 @@ check('score labels cover the whole range', () => {
   assert.strictEqual(PRON.scoreLabel(10), 'Keep practising');
 });
 
+// ---------- hearing the user at all ----------
+check('speech during calibration cannot raise the floor above the voice', () => {
+  // The reported failure mode: in a background tab Chrome throttles the
+  // detector to one frame a second, so calibration spans six seconds of
+  // talking. Averaging those frames put the threshold above ordinary speech
+  // and the attempt failed with "I did not hear anything" however loudly the
+  // user spoke. The same happens to anyone who speaks the moment they press
+  // start.
+  const frames = [0.002, 0.003, 0.287, 0.287, 0.002, 0.003];
+  const floor = PRON.noiseFloor(frames);
+  assert.ok(
+    PRON.vadThreshold(floor) < 0.287,
+    `threshold ${PRON.vadThreshold(floor)} would ignore speech at 0.287`
+  );
+});
+
+check('a quiet room still gets the fixed minimum threshold', () => {
+  assert.strictEqual(PRON.vadThreshold(PRON.noiseFloor([0, 0, 0])), 0.015);
+});
+
+check('a noisy room raises the threshold, but only so far', () => {
+  const noisy = PRON.vadThreshold(PRON.noiseFloor([0.03, 0.035, 0.031]));
+  assert.ok(noisy > 0.015, 'a noisy room must not trigger on its own hum');
+  const absurd = PRON.vadThreshold(PRON.noiseFloor([0.5, 0.6, 0.55]));
+  assert.ok(absurd <= 0.07, `${absurd} would sit above ordinary speech`);
+});
+
+check('no frames at all is treated as silence, not as noise', () => {
+  assert.strictEqual(PRON.noiseFloor([]), 0);
+});
+
+// ---------- how long an attempt may run ----------
+check('a sentence gets a longer pause before it counts as finished', () => {
+  // The reported problem: a learner reading aloud breathes between phrases,
+  // and a 1.6s gap ended the attempt halfway through the sentence.
+  const word = PRON.limitsFor('definition');
+  const sentence = PRON.limitsFor('the cat sat down on the warm mat');
+  assert.ok(
+    sentence.endSilenceMs > word.endSilenceMs,
+    `word ${word.endSilenceMs}ms vs sentence ${sentence.endSilenceMs}ms`
+  );
+  assert.ok(sentence.endSilenceMs >= 2000, 'a phrase break is easily two seconds');
+});
+
+check('a sentence gets longer to speak than a single word', () => {
+  assert.ok(
+    PRON.limitsFor('the cat sat down on the warm mat').maxMs > PRON.limitsFor('definition').maxMs
+  );
+});
+
+check('the longer the sentence, the longer the attempt may run', () => {
+  const ten = PRON.limitsFor(new Array(10).fill('word').join(' ')).maxMs;
+  const thirty = PRON.limitsFor(new Array(30).fill('word').join(' ')).maxMs;
+  assert.ok(thirty > ten, `10 words ${ten}ms, 30 words ${thirty}ms`);
+  // A learner reads far slower than a native speaker; anything under a second
+  // a word will cut them off.
+  assert.ok(thirty / 30 >= 1000, `${Math.round(thirty / 30)}ms per word is too tight`);
+});
+
+check('no sentence can hold the microphone forever', () => {
+  const huge = PRON.limitsFor(new Array(500).fill('word').join(' ')).maxMs;
+  assert.ok(huge <= 60000, `${huge}ms`);
+});
+
+check('a single word keeps the short clocks', () => {
+  assert.deepStrictEqual(PRON.limitsFor('definition'), {
+    maxMs: PRON.MAX_MS,
+    endSilenceMs: PRON.END_SILENCE_MS,
+  });
+  // Padding and punctuation must not promote a word to a sentence.
+  assert.strictEqual(PRON.limitsFor('   definition  ').maxMs, PRON.MAX_MS);
+  assert.strictEqual(PRON.limitsFor('').maxMs, PRON.MAX_MS);
+});
+
 check('timings leave room to actually speak', () => {
   assert.ok(PRON.WAIT_FOR_SPEECH_MS >= 8000, 'need a generous window before the first word');
   assert.ok(PRON.END_SILENCE_MS >= 1200, 'need to tolerate a pause between syllables');

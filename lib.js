@@ -86,6 +86,15 @@ const LIB = (() => {
     return duplicate ? { status: 'duplicate' } : { status: 'added', id };
   }
 
+  // Wiktionary (via dictionaryapi.dev) and Azure both use the strict IPA
+  // symbols: ɹ for the English r, ɡ for g. They are the correct symbols, but
+  // no learner dictionary prints them - Cambridge, Oxford and Longman all use
+  // r and g - so to a learner ɹ just reads as a broken character. Swapped at
+  // display time only, and in one place, so the dictionary line and Azure's
+  // line never disagree about how a sound is spelled.
+  const IPA_PLAIN = { 'ɹ': 'r', 'ɡ': 'g' };
+  const readableIpa = (text) => (text || '').replace(/[ɹɡ]/gu, (c) => IPA_PLAIN[c]);
+
   // ---------- lookups ----------
   async function lookupWord(word) {
     const res = await fetch(
@@ -96,9 +105,21 @@ const LIB = (() => {
     const entry = Array.isArray(data) ? data[0] : null;
     if (!entry) return null;
 
+    // dictionaryapi.dev lists several transcriptions per word: a British one
+    // (usually the bare `phonetic` field) and an American one carrying the
+    // -us.mp3 audio. Take them as a pair, American first - otherwise the card
+    // showed British text while the speaker button played American audio, and
+    // Azure scored against American English on top of that. "revamp" came out
+    // as /ɹiːˈvamp/ next to a voice clearly saying /riˈvæmp/.
     const phonetics = entry.phonetics || [];
-    const phonetic = entry.phonetic || (phonetics.find((p) => p.text) || {}).text || '';
-    let audio = (phonetics.find((p) => p.audio) || {}).audio || '';
+    const isUs = (p) => (p.audio || '').includes('-us.');
+    const spoken =
+      phonetics.find((p) => isUs(p) && p.text) ||
+      phonetics.find((p) => p.text && p.audio) ||
+      phonetics.find((p) => p.text) ||
+      {};
+    const phonetic = spoken.text || entry.phonetic || '';
+    let audio = spoken.audio || (phonetics.find((p) => p.audio) || {}).audio || '';
     if (audio.startsWith('//')) audio = 'https:' + audio;
 
     const defs = [];
@@ -139,7 +160,7 @@ const LIB = (() => {
   async function askOpenAI(apiKey, text, type) {
     const prompt =
       type === 'word'
-        ? `Explain the English word "${text}" for a learner with basic English. Reply with JSON only, no other text: {"meaning":"simple meaning in one short sentence","example":"one short example sentence"}`
+        ? `Explain the English word "${text}" for a learner with basic English. Reply with JSON only, no other text: {"meaning":"simple meaning in one short sentence","example":"one short example sentence","ipa":"American English IPA for this exact word, wrapped in slashes, e.g. /rɪˈvæmpt/"}`
         : `Explain this English sentence for a learner with basic English. Reply with JSON only, no other text: {"meaning":"what it means, in simple English, 1 or 2 short sentences","example":"one other short example that uses a similar idea or phrase"}\n\nSentence: ${text}`;
 
     const reply = await openaiChat(apiKey, [{ role: 'user', content: prompt }], true);
@@ -224,13 +245,20 @@ const LIB = (() => {
       }
     }
 
-    if (!info.meaning || !info.example) {
+    // Inflected forms are the common case here: dictionaryapi.dev has an entry
+    // for "revamped" but no transcription on it, and none at all for
+    // "ubiquitously". Those are exactly the forms a learner selects off a web
+    // page, and they were landing with no IPA at all. The AI call already runs
+    // for a missing meaning, so a missing pronunciation rides along on it.
+    const needsIpa = item.type === 'word' && !info.phonetic;
+    if (!info.meaning || !info.example || needsIpa) {
       const { apiKey } = await getSettings();
       if (apiKey) {
         try {
           const ai = await askOpenAI(apiKey, item.text, item.type);
           info.meaning = info.meaning || ai.meaning || '';
           info.example = info.example || ai.example || '';
+          info.phonetic = info.phonetic || (item.type === 'word' ? ai.ipa || '' : '');
         } catch (e) {
           note = 'AI lookup failed: ' + e.message;
         }
@@ -291,6 +319,7 @@ const LIB = (() => {
     classify,
     addItem,
     lookupWord,
+    readableIpa,
     openaiChat,
     askOpenAI,
     addExample,

@@ -237,7 +237,10 @@ const UI = (() => {
   }
 
   // Dictionary IPA already arrives wrapped in slashes; Azure's does not.
-  const slashed = (ipa) => (/^\/.*\/$/.test(ipa) ? ipa : `/${ipa}/`);
+  const slashed = (ipa) => {
+    const t = LIB.readableIpa(ipa);
+    return /^\/.*\/$/.test(t) ? t : `/${t}/`;
+  };
 
   function ipaRow(label, inner) {
     const row = el('div', 'ipa-row');
@@ -251,11 +254,11 @@ const UI = (() => {
     const line = el('span', 'ipa pron-line');
     line.append(el('span', 'slash', '/'));
     slots.forEach((s) => {
-      const span = el('span', s.ok ? 'ok' : 'bad', s.spoken);
+      const span = el('span', s.ok ? 'ok' : 'bad', LIB.readableIpa(s.spoken));
       if (typeof s.score === 'number') {
         span.title = s.ok
           ? `${Math.round(s.score)}/100`
-          : `expected ${s.expected} - ${Math.round(s.score)}/100`;
+          : `expected ${LIB.readableIpa(s.expected)} - ${Math.round(s.score)}/100`;
       }
       line.append(span);
     });
@@ -355,7 +358,7 @@ const UI = (() => {
       // happening. Once they are talking it would just be a clock ticking at
       // them, so it goes away.
       let waiting = true;
-      activeSession = PRON.createSession({
+      activeSession = PRON.createSession(item.text, {
         onState(state) {
           if (state === 'listening') status.textContent = 'Listening - speak now';
           else if (state === 'speaking') {
@@ -412,7 +415,7 @@ const UI = (() => {
       // The dictionary's IPA is the nicer one - it carries stress marks - but
       // it is missing for plenty of words, so Azure's own reference sounds
       // stand in rather than leaving the learner nothing to aim at.
-      const target = item.phonetic || (a.targetIpa ? slashed(a.targetIpa) : '');
+      const target = item.phonetic ? slashed(item.phonetic) : a.targetIpa ? slashed(a.targetIpa) : '';
       if (target) box.append(ipaRow('Target', el('span', 'ipa', target)));
 
       if (a.spokenIpa && a.spokenIpa.length) {
@@ -546,7 +549,7 @@ const UI = (() => {
     const c = el('div', `card rail-${rail}`);
     const top = el('div', 'top');
     top.append(el('span', 'term', item.text));
-    if (item.phonetic) top.append(el('span', 'phonetic', item.phonetic));
+    if (item.phonetic) top.append(el('span', 'phonetic', LIB.readableIpa(item.phonetic)));
     top.append(el('span', 'spacer'));
 
     const listen = el('button', 'icon', '🔊');
