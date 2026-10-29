@@ -6,7 +6,7 @@
 //     extensions by default; this un-disables them)
 //   --categoryExtensions  (turns on chrome-extension:// navigation and the
 //     extensions tool category, off by default outside --viaCli mode)
-// See AGENTS.md section 3 for the full setup.
+// See the `e2e-testing` skill (.claude/skills/e2e-testing) for the full setup.
 const { spawnSync } = require('child_process');
 
 const args = [

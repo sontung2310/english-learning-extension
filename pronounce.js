@@ -11,6 +11,12 @@ const PRON = (() => {
   // Every timer is anchored on the microphone actually going live, never on
   // the click, so a slow mic does not eat the user's speaking time.
   const WAIT_FOR_SPEECH_MS = 10000; // silence allowed before the first word
+  // Read through the exported object, never the constant directly. It is the
+  // one seam the end-to-end suite uses to shorten its "said nothing" scenario,
+  // which would otherwise sit through the full ten seconds for real. Nothing
+  // in the extension ever writes to it, so the shipped behaviour is the
+  // constant above.
+  const waitForSpeech = () => PRON.WAIT_FOR_SPEECH_MS;
   const END_SILENCE_MS = 1600; // pause after one word that ends the attempt
   const MAX_MS = 15000; // hard cap on one word
   // A learner reading a sentence aloud is slow and pauses between phrases.
@@ -490,10 +496,10 @@ const PRON = (() => {
     // has been silent.
     function micLive() {
       if (finished || speechStarted || waitTimer) return;
-      deadline = Date.now() + WAIT_FOR_SPEECH_MS;
+      deadline = Date.now() + waitForSpeech();
       emit('onState', 'listening');
-      waitTimer = setTimeout(() => finish('no-speech'), WAIT_FOR_SPEECH_MS);
-      capTimer = setTimeout(() => finish('ok'), maxMs + WAIT_FOR_SPEECH_MS);
+      waitTimer = setTimeout(() => finish('no-speech'), waitForSpeech());
+      capTimer = setTimeout(() => finish('ok'), maxMs + waitForSpeech());
       tickTimer = setInterval(() => {
         if (!finished) emit('onTick', Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
       }, 250);

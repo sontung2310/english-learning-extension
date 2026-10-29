@@ -51,13 +51,32 @@ if (!CHROME) {
 const PORT = 9336;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// --bail stops at the first failure. Worth knowing why it is not the default:
+// a full run is the regression check and every result is wanted, but while
+// debugging, letting the suite finish means paying the remaining scenarios -
+// a reload and real tone playback each - to learn nothing new. The session
+// that found the timer-throttling bug re-ran this suite a dozen times without
+// it.
+const BAIL = process.argv.includes('--bail');
+// --only=<name> runs one block, matched against the names in RUN below. For
+// iterating on the part you just changed instead of all thirteen.
+const ONLY = (process.argv.find((a) => a.startsWith('--only=')) || '').slice(7);
+
 let failures = 0;
 let passes = 0;
 function check(name, ok, detail = '') {
   if (ok) passes++;
   else failures++;
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${ok ? '' : `\n        ${detail}`}`);
+  if (!ok && BAIL) {
+    console.log(`\nstopped at the first failure (--bail)\n${passes}/${passes + failures} checks passed`);
+    bail();
+  }
 }
+
+// Skip a block entirely when --only names a different one. Blocks share state
+// through the page, not through variables, so skipping is safe.
+const want = (name) => !ONLY || ONLY === name;
 
 // ---------- CDP ----------
 async function connect(wsUrl) {
@@ -287,6 +306,20 @@ const CLICK_WORD = (term, word) => `(() => {
 })()`;
 
 const profile = mkdtempSync(join(tmpdir(), 'pron-ui-'));
+
+// --bail leaves the `finally` block below unreached, so it has to do the same
+// tidying itself: a Chrome left running holds the debugging port and the next
+// run fails to start.
+function bail() {
+  try {
+    chrome?.kill('SIGKILL');
+  } catch {}
+  try {
+    rmSync(profile, { recursive: true, force: true });
+  } catch {}
+  process.exit(1);
+}
+
 let chrome;
 let cdp;
 let sid;
@@ -399,284 +432,324 @@ try {
   await ev('location.reload()');
   await sleep(1500);
 
-  // ===== idle =====
-  let p = await ev(PANEL('definition'));
-  check('practice panel renders on a word card', !p.missing && !p.noPanel, JSON.stringify(p).slice(0, 180));
-  check('dictionary IPA is shown on the card', (p.cardIpa || '').includes('ˈn'), `cardIpa=${p.cardIpa}`);
-  check('idle offers Start and Hear it', p.buttons.join('|').includes('Start speaking') && p.buttons.join('|').includes('Hear it'), p.buttons.join('|'));
-  check('no score before an attempt', p.score === null, `score=${p.score}`);
-
-  // ===== a word, said well =====
-  p = await attempt('definition', 'goodWord');
-  check(
-    'a good attempt is scored',
-    p.score === '96%',
-    `score=${p.score} error=${p.error}\n        trace=${await ev('JSON.stringify(window.__trace)')}`
-  );
-  check('score is styled for the top band', (p.scoreClass || '').includes('great'), p.scoreClass);
-  check('label reads Excellent', p.label === 'Excellent', `label=${p.label}`);
-
-  check(
-    'the target IPA is the dictionary one, with its stress marks',
-    p.ipaRows.Target === '/ˌdɛfɪˈnɪʃən/',
-    `Target=${p.ipaRows.Target}`
-  );
-  check(
-    'the IPA the user actually produced is shown back to them',
-    p.ipaRows['You said'] === '/dɛfənɪʃən/',
-    `You said=${p.ipaRows['You said']}`
-  );
-  check(
-    'each sound is coloured on its own, not the whole line',
-    p.spokenUnits.length === 9 && p.spokenUnits.filter((u) => u.ok).length === 8,
-    JSON.stringify(p.spokenUnits.map((u) => [u.text, u.ok]))
-  );
-  check(
-    'the one weak sound is the red one, and says what was expected',
-    p.spokenUnits[8] && !p.spokenUnits[8].ok && /66\/100/.test(p.spokenUnits[8].title),
-    JSON.stringify(p.spokenUnits[8])
-  );
-  check(
-    'syllables are shown by their letters, and rebuild the word',
-    p.syllables.map((s) => s.text).join('') === 'definition',
-    JSON.stringify(p.syllables)
-  );
-  check(
-    'the panel never echoes the word already in the card title',
-    p.panelEchoesWord === false,
-    'the card title sits directly above the panel'
-  );
-  check('Try again is offered after a result', p.buttons.some((b) => b.includes('Try again')), p.buttons.join('|'));
-  check('the listening UI is gone once scored', p.bars === 0, `meter bars still on screen: ${p.bars}`);
-
-  const sent = await ev('window.__azureCalls[0]');
-  check('the request asked Azure for IPA, not its default alphabet', sent?.PhonemeAlphabet === 'IPA', JSON.stringify(sent));
-  check('the request asked what was said, not just whether it was right', sent?.NBestPhonemeCount >= 1, JSON.stringify(sent));
-  check('prosody was requested', sent?.EnableProsodyAssessment === true, JSON.stringify(sent));
-  check('miscue is off for a single word', sent?.EnableMiscue === false, JSON.stringify(sent));
-  check('the reference text is the word on the card', sent?.ReferenceText === 'definition', JSON.stringify(sent));
-
-  p = await until('definition', (s) => s.feedback && !/Writing/.test(s.feedback), 8000, 'coach feedback');
-  check('the coach turns the numbers into advice', /Round your lips/.test(p.feedback), `feedback=${p.feedback}`);
-
-  // ===== a word, said wrong =====
-  p = await attempt('definition', 'wrongWord');
-  check('a wrong word scores low', p.score === '15%', `score=${p.score} error=${p.error}`);
-  check('score is styled for the bottom band', (p.scoreClass || '').includes('poor'), p.scoreClass);
-  check(
-    'the IPA shows the sounds that really came out, not the target',
-    p.ipaRows['You said'] === '/bənæn/',
-    `You said=${p.ipaRows['You said']}`
-  );
-  check(
-    'every sound of a wrong word is red',
-    p.spokenUnits.length && p.spokenUnits.every((u) => !u.ok),
-    JSON.stringify(p.spokenUnits.map((u) => [u.text, u.ok]))
-  );
-  check(
-    'a red sound names the sound that belonged there',
-    /expected d/.test(p.spokenUnits[0].title || ''),
-    `title=${p.spokenUnits[0].title}`
-  );
-  check(
-    'the target IPA still stands next to it for comparison',
-    p.ipaRows.Target === '/ˌdɛfɪˈnɪʃən/',
-    `Target=${p.ipaRows.Target}`
-  );
-
-  // ===== a word with no dictionary IPA falls back to Azure's =====
-  p = await attempt('posterity', 'goodWord');
-  check('a word with no dictionary IPA still gets a target', !!p.ipaRows.Target, JSON.stringify(p.ipaRows));
-  check(
-    "the fallback is Azure's own reference sounds, dotted by syllable",
-    p.ipaRows.Target === '/dɛf.ə.nɪ.ʃən/',
-    `Target=${p.ipaRows.Target}`
-  );
-  check('the card itself shows no IPA for that word', p.cardIpa === null, `cardIpa=${p.cardIpa}`);
-
-  // ===== a sentence, judged like a PTE answer =====
-  await scenario('sentence');
-  await ev(`document.querySelector('.tabs button[data-tab="sentence"]').click()`);
-  await sleep(400);
+  // Shared across blocks, so any one of them can run alone under --only.
   const TERM = 'the cat sat down on the warm mat';
-  let s = await ev(PANEL(TERM));
-  check('sentence card has a practice panel', !s.missing && !s.noPanel, JSON.stringify(s).slice(0, 180));
-  check('sentence card echoes nothing either', s.panelEchoesWord === false, 'the sentence is already the card title');
+  let p;
+  let s;
 
-  await ev(CLICK(TERM, 'Start speaking'));
-  s = await until(TERM, (x) => x.score !== null || x.error !== null, 20000, 'a sentence verdict');
-  check('the sentence gets one overall score', s.score === '82%', `score=${s.score} error=${s.error}`);
-  check('the overall score is labelled', /Overall/.test(s.label || ''), `label=${s.label}`);
+  if (want('idle')) {
+    // ===== idle =====
+    p = await ev(PANEL('definition'));
+    check('practice panel renders on a word card', !p.missing && !p.noPanel, JSON.stringify(p).slice(0, 180));
+    check('dictionary IPA is shown on the card', (p.cardIpa || '').includes('ˈn'), `cardIpa=${p.cardIpa}`);
+    check('idle offers Start and Hear it', p.buttons.join('|').includes('Start speaking') && p.buttons.join('|').includes('Hear it'), p.buttons.join('|'));
+    check('no score before an attempt', p.score === null, `score=${p.score}`);
+  }
 
-  const byLabel = Object.fromEntries(s.pte.map((r) => [r.label, r]));
-  check(
-    'it is marked on the PTE dimensions',
-    ['Content', 'Pronunciation', 'Fluency'].every((k) => byLabel[k]),
-    JSON.stringify(s.pte.map((r) => r.label))
-  );
-  check('Content is the share of the sentence actually said', byLabel.Content?.num === '75', JSON.stringify(byLabel.Content));
-  check('Content says in words what was missed', /2 words not said/.test(byLabel.Content?.note || ''), JSON.stringify(byLabel.Content));
-  check('Pronunciation is the per-word sound accuracy', byLabel.Pronunciation?.num === '71', JSON.stringify(byLabel.Pronunciation));
-  check('Fluency is reported', byLabel.Fluency?.num === '100', JSON.stringify(byLabel.Fluency));
-  check('Prosody is reported as well', byLabel.Prosody?.num === '91', JSON.stringify(byLabel.Prosody));
-  check('each bar is drawn to its score', byLabel.Content?.width === '75%', `width=${byLabel.Content?.width}`);
+  if (want('word-good')) {
+    // ===== a word, said well =====
+    p = await attempt('definition', 'goodWord');
+    check(
+      'a good attempt is scored',
+      p.score === '96%',
+      `score=${p.score} error=${p.error}\n        trace=${await ev('JSON.stringify(window.__trace)')}`
+    );
+    check('score is styled for the top band', (p.scoreClass || '').includes('great'), p.scoreClass);
+    check('label reads Excellent', p.label === 'Excellent', `label=${p.label}`);
 
-  check(
-    'every word of the sentence is shown',
-    s.words.map((w) => w.text).join(' ') === TERM,
-    JSON.stringify(s.words.map((w) => w.text))
-  );
-  check(
-    'the two skipped words are the red ones',
-    s.words.filter((w) => !w.ok).map((w) => w.text).join(',') === 'down,warm',
-    JSON.stringify(s.words.map((w) => [w.text, w.ok]))
-  );
-  check('what Azure heard is echoed back', /The cat sat on the mat/.test(s.heard || ''), `heard=${s.heard}`);
+    check(
+      'the target IPA is the dictionary one, with its stress marks',
+      p.ipaRows.Target === '/ˌdɛfɪˈnɪʃən/',
+      `Target=${p.ipaRows.Target}`
+    );
+    check(
+      'the IPA the user actually produced is shown back to them',
+      p.ipaRows['You said'] === '/dɛfənɪʃən/',
+      `You said=${p.ipaRows['You said']}`
+    );
+    check(
+      'each sound is coloured on its own, not the whole line',
+      p.spokenUnits.length === 9 && p.spokenUnits.filter((u) => u.ok).length === 8,
+      JSON.stringify(p.spokenUnits.map((u) => [u.text, u.ok]))
+    );
+    check(
+      'the one weak sound is the red one, and says what was expected',
+      p.spokenUnits[8] && !p.spokenUnits[8].ok && /66\/100/.test(p.spokenUnits[8].title),
+      JSON.stringify(p.spokenUnits[8])
+    );
+    check(
+      'syllables are shown by their letters, and rebuild the word',
+      p.syllables.map((s) => s.text).join('') === 'definition',
+      JSON.stringify(p.syllables)
+    );
+    check(
+      'the panel never echoes the word already in the card title',
+      p.panelEchoesWord === false,
+      'the card title sits directly above the panel'
+    );
+    check('Try again is offered after a result', p.buttons.some((b) => b.includes('Try again')), p.buttons.join('|'));
+    check('the listening UI is gone once scored', p.bars === 0, `meter bars still on screen: ${p.bars}`);
 
-  const sentCfg = await ev('window.__azureCalls[0]');
-  check('miscue is on for a sentence, so skipped words are caught', sentCfg?.EnableMiscue === true, JSON.stringify(sentCfg));
+    const sent = await ev('window.__azureCalls[0]');
+    check('the request asked Azure for IPA, not its default alphabet', sent?.PhonemeAlphabet === 'IPA', JSON.stringify(sent));
+    check('the request asked what was said, not just whether it was right', sent?.NBestPhonemeCount >= 1, JSON.stringify(sent));
+    check('prosody was requested', sent?.EnableProsodyAssessment === true, JSON.stringify(sent));
+    check('miscue is off for a single word', sent?.EnableMiscue === false, JSON.stringify(sent));
+    check('the reference text is the word on the card', sent?.ReferenceText === 'definition', JSON.stringify(sent));
 
-  // a word a learner got right: tap it to see the sounds inside
-  check('no word detail is open before tapping', s.detail === '', `detail=${s.detail}`);
-  await ev(CLICK_WORD(TERM, 'cat'));
-  s = await until(TERM, (x) => x.detail !== '', 3000, 'word detail');
-  check('tapping a word opens its own sounds', /cat/.test(s.detail), `detail=${s.detail}`);
-  check(
-    'the detail shows that word target IPA and what was said',
-    s.detailIpa.length === 2 && s.detailIpa[0][1] === '/kæt/',
-    JSON.stringify(s.detailIpa)
-  );
-  check('the word carries its own score', /100%/.test(s.detail), `detail=${s.detail}`);
+    p = await until('definition', (s) => s.feedback && !/Writing/.test(s.feedback), 8000, 'coach feedback');
+    check('the coach turns the numbers into advice', /Round your lips/.test(p.feedback), `feedback=${p.feedback}`);
+  }
 
-  // a skipped word explains itself instead of showing empty IPA
-  await ev(CLICK_WORD(TERM, 'down'));
-  s = await until(TERM, (x) => /skipped|not said/.test(x.detail), 3000, 'skipped-word detail');
-  check('a skipped word says it was skipped', /not said/.test(s.detail), `detail=${s.detail}`);
-  check('a skipped word shows no invented IPA', s.detailIpa.length === 0, JSON.stringify(s.detailIpa));
+  if (want('word-wrong')) {
+    // ===== a word, said wrong =====
+    p = await attempt('definition', 'wrongWord');
+    check('a wrong word scores low', p.score === '15%', `score=${p.score} error=${p.error}`);
+    check('score is styled for the bottom band', (p.scoreClass || '').includes('poor'), p.scoreClass);
+    check(
+      'the IPA shows the sounds that really came out, not the target',
+      p.ipaRows['You said'] === '/bənæn/',
+      `You said=${p.ipaRows['You said']}`
+    );
+    check(
+      'every sound of a wrong word is red',
+      p.spokenUnits.length && p.spokenUnits.every((u) => !u.ok),
+      JSON.stringify(p.spokenUnits.map((u) => [u.text, u.ok]))
+    );
+    check(
+      'a red sound names the sound that belonged there',
+      /expected d/.test(p.spokenUnits[0].title || ''),
+      `title=${p.spokenUnits[0].title}`
+    );
+    check(
+      'the target IPA still stands next to it for comparison',
+      p.ipaRows.Target === '/ˌdɛfɪˈnɪʃən/',
+      `Target=${p.ipaRows.Target}`
+    );
+  }
 
-  await ev(`document.querySelector('.tabs button[data-tab="word"]').click()`);
-  await sleep(300);
+  if (want('word-fallback')) {
+    // ===== a word with no dictionary IPA falls back to Azure's =====
+    p = await attempt('posterity', 'goodWord');
+    check('a word with no dictionary IPA still gets a target', !!p.ipaRows.Target, JSON.stringify(p.ipaRows));
+    check(
+      "the fallback is Azure's own reference sounds, dotted by syllable",
+      p.ipaRows.Target === '/dɛf.ə.nɪ.ʃən/',
+      `Target=${p.ipaRows.Target}`
+    );
+    check('the card itself shows no IPA for that word', p.cardIpa === null, `cardIpa=${p.cardIpa}`);
+  }
 
-  // ===== the IPA on a freshly saved word =====
-  await scenario('goodWord');
-  const saved = await ev(`(async () => {
-    const r = await LIB.addItem('revamp');
-    if (r.status !== 'added') return { status: r.status };
-    await LIB.enrichItem(r.id);
-    const it = (await LIB.getItems()).find(i => i.id === r.id);
-    return { stored: it.phonetic, shown: LIB.readableIpa(it.phonetic), audio: it.audio };
-  })()`);
-  check(
-    'a saved word gets its IPA without being asked',
-    !!saved.stored,
-    `nothing stored: ${JSON.stringify(saved)}`
-  );
-  check(
-    'the IPA is the American one, matching the audio we play and the accent Azure scores',
-    saved.stored === '/\u0279i\u02c8v\u00e6mp/',
-    `stored=${saved.stored} - the British /\u0279i\u02d0\u02c8vamp/ would contradict the -us.mp3 audio`
-  );
-  check(
-    'the audio is the American clip, from the same entry as the text',
-    /revamp-us\.mp3$/.test(saved.audio || ''),
-    `audio=${saved.audio}`
-  );
-  check(
-    'strict IPA symbols are shown as the ones learner dictionaries print',
-    saved.shown === '/ri\u02c8v\u00e6mp/',
-    `shown=${saved.shown} - \u0279 reads as a broken character to a learner`
-  );
+  if (want('sentence')) {
+    // ===== a sentence, judged like a PTE answer =====
+    await scenario('sentence');
+    await ev(`document.querySelector('.tabs button[data-tab="sentence"]').click()`);
+    await sleep(400);
+    s = await ev(PANEL(TERM));
+    check('sentence card has a practice panel', !s.missing && !s.noPanel, JSON.stringify(s).slice(0, 180));
+    check('sentence card echoes nothing either', s.panelEchoesWord === false, 'the sentence is already the card title');
 
-  // ===== a pause mid-sentence must not end the attempt =====
-  // The reported bug: reading a sentence aloud, a breath between phrases was
-  // read as the end and the learner was cut off halfway.
-  const timeAttempt = async (term, tab) => {
-    await scenario('goodWord', 'window.__gap = true');
-    if (tab) {
-      await ev(`document.querySelector('.tabs button[data-tab="${tab}"]').click()`);
-      await sleep(400);
-    }
-    const started = Date.now();
-    await ev(CLICK(term, 'Start speaking'));
-    await until(term, (x) => x.score !== null || x.error !== null, 30000, `${term} verdict`);
-    return Date.now() - started;
-  };
+    await ev(CLICK(TERM, 'Start speaking'));
+    s = await until(TERM, (x) => x.score !== null || x.error !== null, 20000, 'a sentence verdict');
+    check('the sentence gets one overall score', s.score === '82%', `score=${s.score} error=${s.error}`);
+    check('the overall score is labelled', /Overall/.test(s.label || ''), `label=${s.label}`);
 
-  const wordMs = await timeAttempt('definition', 'word');
-  const sentenceMs = await timeAttempt(TERM, 'sentence');
-  check(
-    'a two-second pause ends a single-word attempt',
-    wordMs < 7000,
-    `${wordMs}ms - one word should not wait around`
-  );
-  check(
-    'the same pause does not end a sentence attempt',
-    sentenceMs > wordMs + 1500,
-    `word ${wordMs}ms vs sentence ${sentenceMs}ms - a breath between phrases must not cut the learner off`
-  );
-  await ev(`document.querySelector('.tabs button[data-tab="word"]').click()`);
-  await sleep(300);
+    const byLabel = Object.fromEntries(s.pte.map((r) => [r.label, r]));
+    check(
+      'it is marked on the PTE dimensions',
+      ['Content', 'Pronunciation', 'Fluency'].every((k) => byLabel[k]),
+      JSON.stringify(s.pte.map((r) => r.label))
+    );
+    check('Content is the share of the sentence actually said', byLabel.Content?.num === '75', JSON.stringify(byLabel.Content));
+    check('Content says in words what was missed', /2 words not said/.test(byLabel.Content?.note || ''), JSON.stringify(byLabel.Content));
+    check('Pronunciation is the per-word sound accuracy', byLabel.Pronunciation?.num === '71', JSON.stringify(byLabel.Pronunciation));
+    check('Fluency is reported', byLabel.Fluency?.num === '100', JSON.stringify(byLabel.Fluency));
+    check('Prosody is reported as well', byLabel.Prosody?.num === '91', JSON.stringify(byLabel.Prosody));
+    check('each bar is drawn to its score', byLabel.Content?.width === '75%', `width=${byLabel.Content?.width}`);
 
-  // ===== live states =====
-  await scenario('goodWord');
-  await ev(CLICK('definition', 'Start speaking'));
-  p = await until('definition', (x) => x.bars === 7, 4000, 'level meter');
-  check('level meter and Stop appear while listening', p.bars === 7 && p.buttons.includes('Stop'), JSON.stringify(p.buttons));
-  p = await until('definition', (x) => /Listening/i.test(x.status || ''), 5000, '"listening" status');
-  check('status becomes "Listening - speak now" once the mic is live', /Listening/i.test(p.status), `status=${p.status}`);
-  p = await until('definition', (x) => /hear you/i.test(x.status || ''), 6000, '"I can hear you" status');
-  check('status reacts when speech starts, from microphone energy alone', /hear you/i.test(p.status), `status=${p.status}`);
-  await until('definition', (x) => x.score !== null, 20000, 'result');
+    check(
+      'every word of the sentence is shown',
+      s.words.map((w) => w.text).join(' ') === TERM,
+      JSON.stringify(s.words.map((w) => w.text))
+    );
+    check(
+      'the two skipped words are the red ones',
+      s.words.filter((w) => !w.ok).map((w) => w.text).join(',') === 'down,warm',
+      JSON.stringify(s.words.map((w) => [w.text, w.ok]))
+    );
+    check('what Azure heard is echoed back', /The cat sat on the mat/.test(s.heard || ''), `heard=${s.heard}`);
 
-  // ===== user stops early =====
-  await scenario('goodWord');
-  await ev(CLICK('definition', 'Start speaking'));
-  await until('definition', (x) => /hear you/i.test(x.status || ''), 8000, 'speech detected');
-  await ev(CLICK('definition', 'Stop'));
-  p = await until('definition', (x) => x.score !== null || x.error !== null, 10000, 'result after Stop');
-  check('pressing Stop ends the attempt and still scores it', p.score !== null, `error=${p.error}`);
+    const sentCfg = await ev('window.__azureCalls[0]');
+    check('miscue is on for a sentence, so skipped words are caught', sentCfg?.EnableMiscue === true, JSON.stringify(sentCfg));
 
-  // ===== nothing said =====
-  await scenario('silence', 'window.__staySilent = true');
-  await ev(CLICK('definition', 'Start speaking'));
-  await sleep(4000);
-  p = await ev(PANEL('definition'));
-  check('silence does not fail early - still waiting at 4s', p.error === null && p.score === null, `error=${p.error}`);
-  check('a countdown reassures the user while nothing happens', /\ds/.test(p.countdown || ''), `countdown=${p.countdown}`);
-  p = await until('definition', (x) => x.error !== null, 14000, 'no-speech message');
-  check('silence eventually explains itself clearly', /did not hear/i.test(p.error), `error=${p.error}`);
-  check('Try again is offered after silence', p.buttons.some((b) => b.includes('Try again')), p.buttons.join('|'));
+    // a word a learner got right: tap it to see the sounds inside
+    check('no word detail is open before tapping', s.detail === '', `detail=${s.detail}`);
+    await ev(CLICK_WORD(TERM, 'cat'));
+    s = await until(TERM, (x) => x.detail !== '', 3000, 'word detail');
+    check('tapping a word opens its own sounds', /cat/.test(s.detail), `detail=${s.detail}`);
+    check(
+      'the detail shows that word target IPA and what was said',
+      s.detailIpa.length === 2 && s.detailIpa[0][1] === '/kæt/',
+      JSON.stringify(s.detailIpa)
+    );
+    check('the word carries its own score', /100%/.test(s.detail), `detail=${s.detail}`);
 
-  // ===== permission denied =====
-  await scenario('goodWord', 'window.__denyMic = true');
-  await ev(CLICK('definition', 'Start speaking'));
-  p = await until('definition', (x) => x.error !== null, 6000, 'denied message');
-  check('a blocked microphone says how to fix it', /Microphone blocked/i.test(p.error), `error=${p.error}`);
+    // a skipped word explains itself instead of showing empty IPA
+    await ev(CLICK_WORD(TERM, 'down'));
+    s = await until(TERM, (x) => /skipped|not said/.test(x.detail), 3000, 'skipped-word detail');
+    check('a skipped word says it was skipped', /not said/.test(s.detail), `detail=${s.detail}`);
+    check('a skipped word shows no invented IPA', s.detailIpa.length === 0, JSON.stringify(s.detailIpa));
 
-  // ===== Azure refuses the request =====
-  await scenario('goodWord', 'window.__azureStatus = 401');
-  await ev(CLICK('definition', 'Start speaking'));
-  p = await until('definition', (x) => x.error !== null, 20000, 'request-failed message');
-  check(
-    'a rejected key is reported, never papered over with a made-up score',
-    /Azure key and region/i.test(p.error) && p.score === null,
-    `error=${p.error} score=${p.score}`
-  );
+    await ev(`document.querySelector('.tabs button[data-tab="word"]').click()`);
+    await sleep(300);
+  }
 
-  // ===== no Azure key at all =====
-  await ev(`(async () => {
-    const { settings } = await chrome.storage.local.get('settings');
-    delete settings.azureKey;
-    await chrome.storage.local.set({ settings });
-  })()`);
-  await scenario('goodWord');
-  await ev(CLICK('definition', 'Start speaking'));
-  p = await until('definition', (x) => x.error !== null, 20000, 'no-key message');
-  check(
-    'without a key it asks for one instead of scoring',
-    /Azure Speech key/i.test(p.error),
-    `error=${p.error}`
-  );
+  if (want('saved-ipa')) {
+    // ===== the IPA on a freshly saved word =====
+    await scenario('goodWord');
+    const saved = await ev(`(async () => {
+      const r = await LIB.addItem('revamp');
+      if (r.status !== 'added') return { status: r.status };
+      await LIB.enrichItem(r.id);
+      const it = (await LIB.getItems()).find(i => i.id === r.id);
+      return { stored: it.phonetic, shown: LIB.readableIpa(it.phonetic), audio: it.audio, meaning: it.meaning };
+    })()`);
+    check(
+      'a saved word gets its IPA without being asked',
+      !!saved.stored,
+      `nothing stored: ${JSON.stringify(saved)}`
+    );
+    check(
+      'the IPA is the American one, matching the audio we play and the accent Azure scores',
+      saved.stored === '/\u0279i\u02c8v\u00e6mp/',
+      `stored=${saved.stored} - the British /\u0279i\u02d0\u02c8vamp/ would contradict the -us.mp3 audio`
+    );
+    check(
+      'the audio is the American clip, from the same entry as the text',
+      /revamp-us\.mp3$/.test(saved.audio || ''),
+      `audio=${saved.audio}`
+    );
+    check(
+      "a word's meaning opens with its part of speech",
+      /^\(verb\) /.test(saved.meaning || ''),
+      `meaning=${saved.meaning} - a learner needs to know it is a verb`
+    );
+    check(
+      'strict IPA symbols are shown as the ones learner dictionaries print',
+      saved.shown === '/ri\u02c8v\u00e6mp/',
+      `shown=${saved.shown} - \u0279 reads as a broken character to a learner`
+    );
+  }
+
+  if (want('pause')) {
+    // ===== a pause mid-sentence must not end the attempt =====
+    // The reported bug: reading a sentence aloud, a breath between phrases was
+    // read as the end and the learner was cut off halfway.
+    const timeAttempt = async (term, tab) => {
+      await scenario('goodWord', 'window.__gap = true');
+      if (tab) {
+        await ev(`document.querySelector('.tabs button[data-tab="${tab}"]').click()`);
+        await sleep(400);
+      }
+      const started = Date.now();
+      await ev(CLICK(term, 'Start speaking'));
+      await until(term, (x) => x.score !== null || x.error !== null, 30000, `${term} verdict`);
+      return Date.now() - started;
+    };
+
+    const wordMs = await timeAttempt('definition', 'word');
+    const sentenceMs = await timeAttempt(TERM, 'sentence');
+    check(
+      'a two-second pause ends a single-word attempt',
+      wordMs < 7000,
+      `${wordMs}ms - one word should not wait around`
+    );
+    check(
+      'the same pause does not end a sentence attempt',
+      sentenceMs > wordMs + 1500,
+      `word ${wordMs}ms vs sentence ${sentenceMs}ms - a breath between phrases must not cut the learner off`
+    );
+    await ev(`document.querySelector('.tabs button[data-tab="word"]').click()`);
+    await sleep(300);
+  }
+
+  if (want('live')) {
+    // ===== live states =====
+    await scenario('goodWord');
+    await ev(CLICK('definition', 'Start speaking'));
+    p = await until('definition', (x) => x.bars === 7, 4000, 'level meter');
+    check('level meter and Stop appear while listening', p.bars === 7 && p.buttons.includes('Stop'), JSON.stringify(p.buttons));
+    p = await until('definition', (x) => /Listening/i.test(x.status || ''), 5000, '"listening" status');
+    check('status becomes "Listening - speak now" once the mic is live', /Listening/i.test(p.status), `status=${p.status}`);
+    p = await until('definition', (x) => /hear you/i.test(x.status || ''), 6000, '"I can hear you" status');
+    check('status reacts when speech starts, from microphone energy alone', /hear you/i.test(p.status), `status=${p.status}`);
+    await until('definition', (x) => x.score !== null, 20000, 'result');
+  }
+
+  if (want('stop-early')) {
+    // ===== user stops early =====
+    await scenario('goodWord');
+    await ev(CLICK('definition', 'Start speaking'));
+    await until('definition', (x) => /hear you/i.test(x.status || ''), 8000, 'speech detected');
+    await ev(CLICK('definition', 'Stop'));
+    p = await until('definition', (x) => x.score !== null || x.error !== null, 10000, 'result after Stop');
+    check('pressing Stop ends the attempt and still scores it', p.score !== null, `error=${p.error}`);
+  }
+
+  if (want('silence')) {
+    // ===== nothing said =====
+    // Shorten the wait for this one scenario. What is under test is the
+    // behaviour - a countdown while nothing happens, then a clear message -
+    // not that the number is literally ten seconds, which pronounce.test.js
+    // already asserts. Sitting through the real timer cost ~12s a run.
+    await scenario('silence', 'window.__staySilent = true; PRON.WAIT_FOR_SPEECH_MS = 2500;');
+    await ev(CLICK('definition', 'Start speaking'));
+    await sleep(1200);
+    p = await ev(PANEL('definition'));
+    check('silence does not fail early - still counting down', p.error === null && p.score === null, `error=${p.error}`);
+    check('a countdown reassures the user while nothing happens', /\ds/.test(p.countdown || ''), `countdown=${p.countdown}`);
+    p = await until('definition', (x) => x.error !== null, 8000, 'no-speech message');
+    check('silence eventually explains itself clearly', /did not hear/i.test(p.error), `error=${p.error}`);
+    check('Try again is offered after silence', p.buttons.some((b) => b.includes('Try again')), p.buttons.join('|'));
+  }
+
+  if (want('denied')) {
+    // ===== permission denied =====
+    await scenario('goodWord', 'window.__denyMic = true');
+    await ev(CLICK('definition', 'Start speaking'));
+    p = await until('definition', (x) => x.error !== null, 6000, 'denied message');
+    check('a blocked microphone says how to fix it', /Microphone blocked/i.test(p.error), `error=${p.error}`);
+  }
+
+  if (want('azure-fail')) {
+    // ===== Azure refuses the request =====
+    await scenario('goodWord', 'window.__azureStatus = 401');
+    await ev(CLICK('definition', 'Start speaking'));
+    p = await until('definition', (x) => x.error !== null, 20000, 'request-failed message');
+    check(
+      'a rejected key is reported, never papered over with a made-up score',
+      /Azure key and region/i.test(p.error) && p.score === null,
+      `error=${p.error} score=${p.score}`
+    );
+  }
+
+  if (want('no-key')) {
+    // ===== no Azure key at all =====
+    await ev(`(async () => {
+      const { settings } = await chrome.storage.local.get('settings');
+      delete settings.azureKey;
+      await chrome.storage.local.set({ settings });
+    })()`);
+    await scenario('goodWord');
+    await ev(CLICK('definition', 'Start speaking'));
+    p = await until('definition', (x) => x.error !== null, 20000, 'no-key message');
+    check(
+      'without a key it asks for one instead of scoring',
+      /Azure Speech key/i.test(p.error),
+      `error=${p.error}`
+    );
+  }
+
 } catch (e) {
   check('suite ran without throwing', false, e.stack || e.message);
 } finally {

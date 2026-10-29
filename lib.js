@@ -95,6 +95,11 @@ const LIB = (() => {
   const IPA_PLAIN = { 'ɹ': 'r', 'ɡ': 'g' };
   const readableIpa = (text) => (text || '').replace(/[ɹɡ]/gu, (c) => IPA_PLAIN[c]);
 
+  // Every word's meaning opens with its part of speech, whichever source
+  // filled it in, so "(noun) any variety of vinegar" reads the same whether it
+  // came from the dictionary or from the AI.
+  const withPos = (pos, meaning) => (pos && meaning ? `(${pos}) ${meaning}` : meaning || '');
+
   // ---------- lookups ----------
   async function lookupWord(word) {
     const res = await fetch(
@@ -129,7 +134,7 @@ const LIB = (() => {
     // Prefer a definition that has an example, so meaning and example match.
     const best = defs.find((d) => d.example) || defs[0];
     if (!best) return null;
-    const meaning = best.pos ? `(${best.pos}) ${best.definition}` : best.definition;
+    const meaning = withPos(best.pos, best.definition);
     return { meaning, example: best.example || '', phonetic, audio };
   }
 
@@ -160,7 +165,7 @@ const LIB = (() => {
   async function askOpenAI(apiKey, text, type) {
     const prompt =
       type === 'word'
-        ? `Explain the English word "${text}" for a learner with basic English. Reply with JSON only, no other text: {"meaning":"simple meaning in one short sentence","example":"one short example sentence","ipa":"American English IPA for this exact word, wrapped in slashes, e.g. /rɪˈvæmpt/"}`
+        ? `Explain the English word "${text}" for a learner with basic English. Reply with JSON only, no other text: {"pos":"part of speech of this word: noun, verb, adjective, adverb, preposition, ...","meaning":"simple meaning in one short sentence, without repeating the part of speech","example":"one short example sentence","ipa":"American English IPA for this exact word, wrapped in slashes, e.g. /rɪˈvæmpt/"}`
         : `Explain this English sentence for a learner with basic English. Reply with JSON only, no other text: {"meaning":"what it means, in simple English, 1 or 2 short sentences","example":"one other short example that uses a similar idea or phrase"}\n\nSentence: ${text}`;
 
     const reply = await openaiChat(apiKey, [{ role: 'user', content: prompt }], true);
@@ -256,7 +261,8 @@ const LIB = (() => {
       if (apiKey) {
         try {
           const ai = await askOpenAI(apiKey, item.text, item.type);
-          info.meaning = info.meaning || ai.meaning || '';
+          info.meaning =
+            info.meaning || (item.type === 'word' ? withPos(ai.pos, ai.meaning) : ai.meaning || '');
           info.example = info.example || ai.example || '';
           info.phonetic = info.phonetic || (item.type === 'word' ? ai.ipa || '' : '');
         } catch (e) {
@@ -318,6 +324,7 @@ const LIB = (() => {
     deleteItem,
     classify,
     addItem,
+    withPos,
     lookupWord,
     readableIpa,
     openaiChat,
